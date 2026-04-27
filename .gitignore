@@ -3,5 +3,6 @@ dist/
 config.yaml
 state.json
 .cache/
+.worktrees/
 .env
 *.log
