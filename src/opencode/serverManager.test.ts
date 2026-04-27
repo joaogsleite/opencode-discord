@@ -287,6 +287,35 @@ describe('ServerManager', () => {
     expect(manager.getClient(projectPath)).toBeUndefined();
   });
 
+  it('waits for an in-flight shutdown when shutdown is called concurrently', async () => {
+    vi.useFakeTimers();
+    let secondResolved = false;
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => process,
+      allocatePort: async () => 4321,
+      createClient: () => client,
+      healthCheck: async () => true,
+      shutdownTimeoutMs: 50,
+    });
+    await manager.ensureRunning(projectPath);
+
+    const first = manager.shutdown(projectPath);
+    const second = manager.shutdown(projectPath);
+    void second.then(() => {
+      secondResolved = true;
+    });
+    await flushPromises();
+
+    expect(secondResolved).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.all([first, second]);
+
+    expect(secondResolved).toBe(true);
+    expect(process.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
   it('shuts down all tracked servers', async () => {
     const processTwo = new MockProcess(5678);
     process.kill.mockImplementation((signal?: NodeJS.Signals) => {

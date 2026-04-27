@@ -42,6 +42,7 @@ interface ManagedServer {
   state: ServerState;
   healthMonitor?: Interval;
   idleTimer?: Timer;
+  shutdownPromise?: Promise<void>;
   stopping?: boolean;
 }
 
@@ -257,10 +258,15 @@ export class ServerManager {
       return;
     }
 
-    if (managed.stopping === true) {
-      return;
+    if (managed.shutdownPromise !== undefined) {
+      return await managed.shutdownPromise;
     }
 
+    managed.shutdownPromise = this.performShutdown(projectPath, managed);
+    return await managed.shutdownPromise;
+  }
+
+  private async performShutdown(projectPath: string, managed: ManagedServer): Promise<void> {
     managed.stopping = true;
     this.cancelIdleTimer(managed);
     this.stopHealthMonitor(managed);
