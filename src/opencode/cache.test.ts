@@ -59,6 +59,25 @@ describe('CacheManager', () => {
     expect(manager.getMcpStatus(projectPath)).toEqual({ filesystem: { status: 'connected' } });
   });
 
+  it('unwraps OpenCode SDK result data before caching', async () => {
+    const cacheDir = createCacheDir();
+    cacheDirs.push(cacheDir);
+    const manager = new CacheManager({ cacheDir });
+    const client = createClient({
+      app: { agents: vi.fn(async () => ({ data: [{ name: 'build' }] })) },
+      config: { providers: vi.fn(async () => ({ data: { providers: [{ id: 'anthropic' }] } })) },
+      session: { list: vi.fn(async () => ({ data: [{ id: 'session-1' }] })) },
+      mcp: { status: vi.fn(async () => ({ data: { filesystem: { status: 'connected' } } })) },
+    });
+
+    await manager.refresh(projectPath, client);
+
+    expect(manager.getAgents(projectPath)).toEqual([{ name: 'build' }]);
+    expect(manager.getModels(projectPath)).toEqual([{ id: 'anthropic' }]);
+    expect(manager.getSessions(projectPath)).toEqual([{ id: 'session-1' }]);
+    expect(manager.getMcpStatus(projectPath)).toEqual({ filesystem: { status: 'connected' } });
+  });
+
   it('persists refreshed cache to disk and loads it in a new manager', async () => {
     const cacheDir = createCacheDir();
     cacheDirs.push(cacheDir);
@@ -82,6 +101,17 @@ describe('CacheManager', () => {
     expect(manager.getModels(projectPath)).toEqual([]);
     expect(manager.getSessions(projectPath)).toEqual([]);
     expect(manager.getMcpStatus(projectPath)).toEqual({});
+  });
+
+  it('does not share cold-cache defaults between projects through getter mutation', () => {
+    const cacheDir = createCacheDir();
+    cacheDirs.push(cacheDir);
+    const manager = new CacheManager({ cacheDir });
+
+    manager.getAgents('/project-a').push({ name: 'mutated' });
+
+    expect(manager.getAgents('/project-a')).toEqual([]);
+    expect(manager.getAgents('/project-b')).toEqual([]);
   });
 
   it('keeps old values or defaults when a refresh fetch fails', async () => {
