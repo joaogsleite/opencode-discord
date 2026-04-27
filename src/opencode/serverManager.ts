@@ -36,11 +36,13 @@ type OpencodeClient = ReturnType<typeof createOpencodeClient>;
 
 interface ManagedServer {
   client: OpencodeClient;
+  exited: boolean;
   failures: number;
   process: ChildProcessLike;
   state: ServerState;
   healthMonitor?: Interval;
   idleTimer?: Timer;
+  stopping?: boolean;
 }
 
 /** Constructor dependencies and timing controls for ServerManager. */
@@ -54,6 +56,7 @@ export interface ServerManagerOptions {
   now?: () => number;
   idleTimeoutMs?: number;
   healthIntervalMs?: number;
+  shutdownTimeoutMs?: number;
   startupPollMs?: number;
   startupTimeoutMs?: number;
 }
@@ -114,6 +117,7 @@ export class ServerManager {
   private readonly now: () => number;
   private readonly idleTimeoutMs: number;
   private readonly healthIntervalMs: number;
+  private readonly shutdownTimeoutMs: number;
   private readonly startupPollMs: number;
   private readonly startupTimeoutMs: number;
   private readonly servers = new Map<string, ManagedServer>();
@@ -132,6 +136,7 @@ export class ServerManager {
     this.now = options.now ?? Date.now;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 5 * 60 * 1000;
     this.healthIntervalMs = options.healthIntervalMs ?? 60 * 1000;
+    this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? 5000;
     this.startupPollMs = options.startupPollMs ?? 500;
     this.startupTimeoutMs = options.startupTimeoutMs ?? 30 * 1000;
   }
@@ -152,17 +157,41 @@ export class ServerManager {
     const url = `http://127.0.0.1:${port}`;
     const serverProcess = this.spawnProcess(projectPath, port);
     const client = this.createClient(url);
+    let managed: ManagedServer | undefined;
+    let startupSettled = false;
+    let processExited = false;
+    const startupProcessFailure = new Promise<never>((_, reject) => {
+      serverProcess.once('error', (error) => {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+      serverProcess.once('exit', (code, signal) => {
+        processExited = true;
+        if (managed !== undefined && this.servers.get(projectPath) === managed) {
+          managed.exited = true;
+          void this.handleManagedExit(projectPath, managed);
+          return;
+        }
+
+        if (!startupSettled) {
+          reject(new Error(`OpenCode server exited during startup: code=${String(code)} signal=${String(signal)}`));
+        }
+      });
+    });
 
     try {
-      await this.waitForHealthy(client);
+      await Promise.race([this.waitForHealthy(client), startupProcessFailure]);
     } catch (error) {
-      serverProcess.kill('SIGTERM');
+      startupSettled = true;
+      if (!processExited) {
+        serverProcess.kill('SIGTERM');
+      }
       throw new BotError(ErrorCode.SERVER_START_FAILED, 'OpenCode server failed to become healthy', {
         projectPath,
         url,
         error,
       });
     }
+    startupSettled = true;
 
     const state: ServerState = {
       port,
@@ -171,8 +200,9 @@ export class ServerManager {
       startedAt: this.now(),
       status: 'running',
     };
-    const managed: ManagedServer = {
+    managed = {
       client,
+      exited: processExited,
       failures: 0,
       process: serverProcess,
       state,
@@ -180,11 +210,6 @@ export class ServerManager {
 
     this.servers.set(projectPath, managed);
     this.stateManager.setServer(projectPath, state);
-    serverProcess.once('exit', () => {
-      if (this.servers.get(projectPath) === managed) {
-        this.markStopped(projectPath, managed, false);
-      }
-    });
     this.startHealthMonitor(projectPath, managed);
 
     return client;
@@ -232,7 +257,23 @@ export class ServerManager {
       return;
     }
 
-    this.markStopped(projectPath, managed, true);
+    if (managed.stopping === true) {
+      return;
+    }
+
+    managed.stopping = true;
+    this.cancelIdleTimer(managed);
+    this.stopHealthMonitor(managed);
+
+    if (!managed.exited) {
+      managed.process.kill('SIGTERM');
+      await this.waitForExitOrTimeout(managed);
+      if (!managed.exited) {
+        managed.process.kill('SIGKILL');
+      }
+    }
+
+    this.markStopped(projectPath, managed);
   }
 
   /**
@@ -283,26 +324,55 @@ export class ServerManager {
         projectPath,
         consecutiveFailures: managed.failures,
       });
-      this.markStopped(projectPath, managed, true);
+      void this.shutdown(projectPath);
     }
   }
 
-  private markStopped(projectPath: string, managed: ManagedServer, killProcess: boolean): void {
-    this.cancelIdleTimer(managed);
-    if (managed.healthMonitor !== undefined) {
-      clearInterval(managed.healthMonitor);
-      managed.healthMonitor = undefined;
+  private async handleManagedExit(projectPath: string, managed: ManagedServer): Promise<void> {
+    managed.exited = true;
+    if (managed.stopping === true) {
+      return;
     }
 
-    if (killProcess && managed.process.killed !== true) {
-      managed.process.kill('SIGTERM');
+    this.markStopped(projectPath, managed);
+  }
+
+  private async waitForExitOrTimeout(managed: ManagedServer): Promise<void> {
+    if (managed.exited) {
+      return;
     }
+
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        managed.process.once('exit', () => {
+          managed.exited = true;
+          resolve();
+        });
+      }),
+      delay(this.shutdownTimeoutMs),
+    ]);
+  }
+
+  private markStopped(projectPath: string, managed: ManagedServer): void {
+    if (this.servers.get(projectPath) !== managed) {
+      return;
+    }
+
+    this.cancelIdleTimer(managed);
+    this.stopHealthMonitor(managed);
 
     this.servers.delete(projectPath);
     this.stateManager.setServer(projectPath, {
       ...managed.state,
       status: 'stopped',
     });
+  }
+
+  private stopHealthMonitor(managed: ManagedServer): void {
+    if (managed.healthMonitor !== undefined) {
+      clearInterval(managed.healthMonitor);
+      managed.healthMonitor = undefined;
+    }
   }
 
   private cancelIdleTimer(managed: ManagedServer): void {

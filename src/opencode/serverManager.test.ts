@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { allocateFreePort, ServerManager } from './serverManager.js';
 import type { ServerState } from '../state/types.js';
 import type { ServerManagerClient } from './serverManager.js';
+import { ErrorCode } from '../utils/errors.js';
 
 class MockProcess extends EventEmitter {
   public killed = false;
@@ -40,6 +41,16 @@ function createClient(id: string): TestClient {
       health: vi.fn(async () => ({ healthy: true })),
     },
   } as unknown as TestClient;
+}
+
+async function expectStartupFailure(promise: Promise<ServerManagerClient>): Promise<void> {
+  await expect(promise).rejects.toMatchObject({
+    code: ErrorCode.SERVER_START_FAILED,
+  });
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
 }
 
 describe('allocateFreePort', () => {
@@ -126,6 +137,42 @@ describe('ServerManager', () => {
     expect(healthCheck).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects startup and does not track a client when the process emits error', async () => {
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => process,
+      allocatePort: async () => 4321,
+      createClient: () => client,
+      healthCheck: async () => await new Promise<boolean>(() => undefined),
+    });
+
+    const startup = manager.ensureRunning(projectPath);
+    await flushPromises();
+    process.emit('error', new Error('spawn failed'));
+
+    await expectStartupFailure(startup);
+    expect(stateManager.setServer).not.toHaveBeenCalled();
+    expect(manager.getClient(projectPath)).toBeUndefined();
+  });
+
+  it('rejects startup and does not track a client when the process exits before healthy', async () => {
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => process,
+      allocatePort: async () => 4321,
+      createClient: () => client,
+      healthCheck: async () => await new Promise<boolean>(() => undefined),
+    });
+
+    const startup = manager.ensureRunning(projectPath);
+    await flushPromises();
+    process.emit('exit', 1, null);
+
+    await expectStartupFailure(startup);
+    expect(stateManager.setServer).not.toHaveBeenCalled();
+    expect(manager.getClient(projectPath)).toBeUndefined();
+  });
+
   it('removes the client and marks the server stopped when the process exits', async () => {
     const manager = new ServerManager({
       stateManager,
@@ -186,7 +233,13 @@ describe('ServerManager', () => {
     expect(process.kill).not.toHaveBeenCalled();
   });
 
-  it('kills and marks a server stopped during graceful shutdown', async () => {
+  it('kills and marks a server stopped after process exits during graceful shutdown', async () => {
+    process.kill.mockImplementation((signal?: NodeJS.Signals) => {
+      if (signal === 'SIGTERM') {
+        process.emit('exit', 0, signal);
+      }
+      return true;
+    });
     const manager = new ServerManager({
       stateManager,
       spawnProcess: () => process,
@@ -194,12 +247,14 @@ describe('ServerManager', () => {
       createClient: () => client,
       healthCheck: async () => true,
       now: () => 1000,
+      shutdownTimeoutMs: 50,
     });
     await manager.ensureRunning(projectPath);
 
     await manager.shutdown(projectPath);
 
     expect(process.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(process.kill).not.toHaveBeenCalledWith('SIGKILL');
     expect(manager.getClient(projectPath)).toBeUndefined();
     expect(stateManager.setServer).toHaveBeenLastCalledWith(projectPath, {
       port: 4321,
@@ -210,8 +265,38 @@ describe('ServerManager', () => {
     });
   });
 
+  it('force kills and resolves shutdown when the process does not exit before timeout', async () => {
+    vi.useFakeTimers();
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => process,
+      allocatePort: async () => 4321,
+      createClient: () => client,
+      healthCheck: async () => true,
+      now: () => 1000,
+      shutdownTimeoutMs: 50,
+    });
+    await manager.ensureRunning(projectPath);
+
+    const shutdown = manager.shutdown(projectPath);
+    await vi.advanceTimersByTimeAsync(50);
+    await shutdown;
+
+    expect(process.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(process.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(manager.getClient(projectPath)).toBeUndefined();
+  });
+
   it('shuts down all tracked servers', async () => {
     const processTwo = new MockProcess(5678);
+    process.kill.mockImplementation((signal?: NodeJS.Signals) => {
+      process.emit('exit', 0, signal);
+      return true;
+    });
+    processTwo.kill.mockImplementation((signal?: NodeJS.Signals) => {
+      processTwo.emit('exit', 0, signal);
+      return true;
+    });
     const clients = [createClient('client-1'), createClient('client-2')];
     const processes = [process, processTwo];
     const manager = new ServerManager({
@@ -246,11 +331,12 @@ describe('ServerManager', () => {
       createClient: () => client,
       healthCheck,
       healthIntervalMs: 10,
+      shutdownTimeoutMs: 1,
       now: () => 1000,
     });
     await manager.ensureRunning(projectPath);
 
-    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(31);
 
     expect(process.kill).toHaveBeenCalledWith('SIGTERM');
     expect(manager.getClient(projectPath)).toBeUndefined();
