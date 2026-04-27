@@ -8,8 +8,10 @@ import type {
 import type { ConfigLoader } from '../../config/loader.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
-import { generateCorrelationId } from '../../utils/logger.js';
+import { createLogger, generateCorrelationId } from '../../utils/logger.js';
 import { checkUserAllowed } from '../../utils/permissions.js';
+
+const logger = createLogger('InteractionHandler');
 
 /** Context passed to interaction sub-handlers. */
 export interface InteractionContext {
@@ -108,8 +110,10 @@ function createContext(
   configLoader: ConfigLoader,
 ): InteractionContext {
   const correlationId = generateCorrelationId(interaction.channelId ?? interaction.id);
+  const channel = interaction.channel as { parentId?: string | null } | null;
+  const channelId = channel?.parentId ?? interaction.channelId;
   const channelConfig = interaction.guildId
-    ? configLoader.getChannelConfig(interaction.guildId, interaction.channelId)
+    ? configLoader.getChannelConfig(interaction.guildId, channelId)
     : undefined;
 
   return { correlationId, channelConfig };
@@ -125,13 +129,19 @@ async function sendError(
     : `**Unexpected error** *(ref: ${correlationId})*`;
   const options: InteractionReplyOptions = { content, ephemeral: true };
 
+  if (err instanceof BotError) {
+    logger.warn(err.message, { code: err.code, correlationId, ...err.context });
+  } else {
+    logger.error('Unhandled interaction error', { correlationId, err });
+  }
+
   if (interaction.replied) {
     await interaction.followUp(options);
     return;
   }
 
   if (interaction.deferred) {
-    await interaction.editReply({ content });
+    await interaction.followUp(options);
     return;
   }
 

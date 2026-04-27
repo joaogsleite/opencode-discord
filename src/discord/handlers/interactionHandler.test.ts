@@ -1,5 +1,5 @@
 import type { ApplicationCommandOptionChoiceData, AutocompleteInteraction, ChatInputCommandInteraction, Interaction } from 'discord.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigLoader } from '../../config/loader.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
@@ -11,15 +11,26 @@ function createConfigLoader(channelConfig?: ChannelConfig): ConfigLoader {
   } as unknown as ConfigLoader;
 }
 
-function createCommandInteraction(commandName = 'new', userId = 'user-1'): ChatInputCommandInteraction {
+interface CommandInteractionOptions {
+  channelId?: string;
+  channel?: { parentId?: string | null };
+  deferred?: boolean;
+}
+
+function createCommandInteraction(
+  commandName = 'new',
+  userId = 'user-1',
+  options: CommandInteractionOptions = {},
+): ChatInputCommandInteraction {
   return {
     id: 'interaction-1',
-    channelId: 'channel-1',
+    channelId: options.channelId ?? 'channel-1',
+    channel: options.channel,
     guildId: 'guild-1',
     commandName,
     user: { id: userId },
     replied: false,
-    deferred: false,
+    deferred: options.deferred ?? false,
     isChatInputCommand: () => true,
     isAutocomplete: () => false,
     reply: vi.fn(),
@@ -41,6 +52,10 @@ function createAutocompleteInteraction(commandName = 'agent'): AutocompleteInter
 }
 
 describe('handleInteraction', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('dispatches command interactions to the registered command handler with context', async () => {
     const channelConfig: ChannelConfig = { channelId: 'channel-1', projectPath: '/project' };
     const configLoader = createConfigLoader(channelConfig);
@@ -121,6 +136,95 @@ describe('handleInteraction', () => {
       content: expect.stringMatching(/not allowed.*ref: channel-1-\d+/i),
       ephemeral: true,
     });
+  });
+
+  it('checks allowedUsers against the parent channel config for thread commands', async () => {
+    const channelConfig: ChannelConfig = {
+      channelId: 'channel-1',
+      projectPath: '/project',
+      allowedUsers: ['allowed-user'],
+    };
+    const configLoader = {
+      getChannelConfig: vi.fn((guildId: string, channelId: string) => {
+        if (guildId === 'guild-1' && channelId === 'channel-1') {
+          return channelConfig;
+        }
+
+        return undefined;
+      }),
+    } as unknown as ConfigLoader;
+    const interaction = createCommandInteraction('new', 'blocked-user', {
+      channelId: 'thread-1',
+      channel: { parentId: 'channel-1' },
+    });
+    const commandHandler = vi.fn<CommandHandler>();
+
+    await handleInteraction(interaction, {
+      configLoader,
+      commandHandlers: new Map([['new', commandHandler]]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(configLoader.getChannelConfig).toHaveBeenCalledWith('guild-1', 'channel-1');
+    expect(commandHandler).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringMatching(/not allowed.*ref: thread-1-\d+/i),
+      ephemeral: true,
+    });
+  });
+
+  it('sends deferred command errors as ephemeral follow-up messages', async () => {
+    const interaction = createCommandInteraction('new', 'user-1', { deferred: true });
+
+    await handleInteraction(interaction, {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map([
+        ['new', vi.fn<CommandHandler>(async () => {
+          throw new BotError(ErrorCode.DISCORD_API_ERROR, 'Deferred failure');
+        })],
+      ]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(interaction.followUp).toHaveBeenCalledWith({
+      content: expect.stringMatching(/Deferred failure.*ref: channel-1-\d+/),
+      ephemeral: true,
+    });
+    expect(interaction.editReply).not.toHaveBeenCalled();
+  });
+
+  it('logs BotError command failures with code and correlation ID', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await handleInteraction(createCommandInteraction('new'), {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map([
+        ['new', vi.fn<CommandHandler>(async () => {
+          throw new BotError(ErrorCode.AGENT_NOT_FOUND, 'Agent missing', { agent: 'ghost' });
+        })],
+      ]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/"correlationId":"channel-1-\d+"/));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"code":"AGENT_NOT_FOUND"'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"agent":"ghost"'));
+  });
+
+  it('logs unknown command failures with correlation ID', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await handleInteraction(createCommandInteraction('new'), {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map([
+        ['new', vi.fn<CommandHandler>(async () => {
+          throw new Error('boom');
+        })],
+      ]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/"correlationId":"channel-1-\d+"/));
   });
 
   it('responds with empty autocomplete choices when the autocomplete handler fails', async () => {
