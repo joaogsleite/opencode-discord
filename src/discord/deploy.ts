@@ -39,7 +39,13 @@ export async function deployCommands(
   const applicationId = decodeApplicationId(token);
   const rest = new REST({ version: '10' }).setToken(token);
 
-  await rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
-    body: commands.map((command) => command.toJSON()),
-  });
+  try {
+    await rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
+      body: commands.map((command) => command.toJSON()),
+    });
+  } catch (error) {
+    throw new BotError(ErrorCode.DISCORD_API_ERROR, 'Failed to deploy Discord commands', {
+      cause: error,
+    });
+  }
 }

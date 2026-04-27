@@ -2,7 +2,7 @@ import { REST, SlashCommandBuilder } from 'discord.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getCommandDefinitions } from './commands/index.js';
 import { deployCommands } from './deploy.js';
-import { BotError, ErrorCode } from '../utils/errors.js';
+import { ErrorCode, type BotError } from '../utils/errors.js';
 
 const putMock = vi.fn();
 const setTokenMock = vi.fn(() => ({ put: putMock }));
@@ -145,6 +145,22 @@ describe('deployCommands', () => {
       code: ErrorCode.DISCORD_API_ERROR,
     } satisfies Partial<BotError>);
     expect(putMock).not.toHaveBeenCalled();
+  });
+
+  it('wraps Discord REST deployment failures in a BotError', async () => {
+    const token = `${Buffer.from('123456789012345678').toString('base64url')}.token.signature`;
+    const commands = [
+      new SlashCommandBuilder().setName('ping').setDescription('Ping command'),
+    ];
+    putMock.mockRejectedValue(new Error('Missing Access'));
+
+    await expect(deployCommands(token, 'guild-456', commands)).rejects.toMatchObject({
+      code: ErrorCode.DISCORD_API_ERROR,
+    } satisfies Partial<BotError>);
+    expect(putMock).toHaveBeenCalledWith(
+      expect.stringContaining('/applications/123456789012345678/guilds/guild-456/commands'),
+      { body: commands.map((command) => command.toJSON()) },
+    );
   });
 
   it('throws a BotError when the application ID cannot be decoded from the token', async () => {
