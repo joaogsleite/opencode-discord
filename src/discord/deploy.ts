@@ -11,8 +11,8 @@ function decodeApplicationId(token: string): string {
   try {
     const applicationId = Buffer.from(encodedApplicationId, 'base64url').toString('utf8');
 
-    if (!applicationId) {
-      throw new Error('Decoded application ID is empty');
+    if (!/^\d+$/.test(applicationId)) {
+      throw new Error('Decoded application ID is not a Discord snowflake');
     }
 
     return applicationId;

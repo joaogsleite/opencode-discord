@@ -123,7 +123,7 @@ describe('deployCommands', () => {
   });
 
   it('registers command JSON with the guild command REST route', async () => {
-    const token = `${Buffer.from('application-123').toString('base64url')}.token.signature`;
+    const token = `${Buffer.from('123456789012345678').toString('base64url')}.token.signature`;
     const commands = [
       new SlashCommandBuilder().setName('ping').setDescription('Ping command'),
     ];
@@ -133,9 +133,18 @@ describe('deployCommands', () => {
     expect(REST).toHaveBeenCalledWith({ version: '10' });
     expect(setTokenMock).toHaveBeenCalledWith(token);
     expect(putMock).toHaveBeenCalledWith(
-      expect.stringContaining('/applications/application-123/guilds/guild-456/commands'),
+      expect.stringContaining('/applications/123456789012345678/guilds/guild-456/commands'),
       { body: commands.map((command) => command.toJSON()) },
     );
+  });
+
+  it('throws a BotError for a non-empty token segment that decodes to a non-snowflake application ID', async () => {
+    const token = `${Buffer.from('not-a-snowflake').toString('base64url')}.token.signature`;
+
+    await expect(deployCommands(token, 'guild-456', [])).rejects.toMatchObject({
+      code: ErrorCode.DISCORD_API_ERROR,
+    } satisfies Partial<BotError>);
+    expect(putMock).not.toHaveBeenCalled();
   });
 
   it('throws a BotError when the application ID cannot be decoded from the token', async () => {
