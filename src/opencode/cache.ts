@@ -132,6 +132,7 @@ export class CacheManager {
   private readonly cacheDir: string;
   private readonly logger: Pick<Logger, 'warn'>;
   private readonly cache = new Map<string, ProjectCache>();
+  private readonly refreshGenerations = new Map<string, number>();
 
   /**
    * Create an OpenCode cache manager.
@@ -149,6 +150,8 @@ export class CacheManager {
    * @returns Nothing
    */
   public async refresh(projectPath: string, client: OpencodeCacheClient): Promise<void> {
+    const generation = (this.refreshGenerations.get(projectPath) ?? 0) + 1;
+    this.refreshGenerations.set(projectPath, generation);
     const previous = this.getOrLoad(projectPath);
     const next: ProjectCache = {
       agents: await this.fetchOrDefault(
@@ -178,8 +181,10 @@ export class CacheManager {
       updatedAt: Date.now(),
     };
 
-    this.cache.set(projectPath, next);
-    this.write(projectPath, next);
+    if (this.refreshGenerations.get(projectPath) === generation) {
+      this.cache.set(projectPath, next);
+      this.write(projectPath, next);
+    }
   }
 
   /**

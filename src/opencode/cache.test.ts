@@ -133,4 +133,27 @@ describe('CacheManager', () => {
     expect(failingManager.getMcpStatus(projectPath)).toEqual({ filesystem: { status: 'connected' } });
     expect(warningLogger.warn).toHaveBeenCalledTimes(2);
   });
+
+  it('does not let an older overlapping refresh overwrite newer metadata', async () => {
+    const cacheDir = createCacheDir();
+    cacheDirs.push(cacheDir);
+    const manager = new CacheManager({ cacheDir });
+    let resolveOldAgents: (agents: unknown[]) => void = () => undefined;
+    const oldAgents = new Promise<unknown[]>((resolve) => {
+      resolveOldAgents = resolve;
+    });
+    const oldClient = createClient({
+      app: { agents: vi.fn(async () => await oldAgents) },
+    });
+    const newClient = createClient({
+      app: { agents: vi.fn(async () => [{ name: 'new' }]) },
+    });
+
+    const olderRefresh = manager.refresh(projectPath, oldClient);
+    await manager.refresh(projectPath, newClient);
+    resolveOldAgents([{ name: 'old' }]);
+    await olderRefresh;
+
+    expect(manager.getAgents(projectPath)).toEqual([{ name: 'new' }]);
+  });
 });
