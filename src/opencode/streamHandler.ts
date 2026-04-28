@@ -6,6 +6,7 @@ export interface GlobalEventLike {
   payload: {
     type: string;
     sessionID?: string;
+    messageID?: string;
     partID?: string;
     delta?: string;
     field?: string;
@@ -102,6 +103,7 @@ export interface StreamHandlerOptions {
 
 interface SubscriptionState {
   cancelled: boolean;
+  pumpPromise: Promise<void>;
 }
 
 const DEFAULT_EDIT_THROTTLE_MS = 1000;
@@ -133,19 +135,37 @@ export class StreamHandler {
    * @param threadId - Discord thread ID to update.
    * @param sessionId - OpenCode session ID to filter.
    * @param client - OpenCode client exposing global events.
-   * @param dedupeSet - Optional future message dedupe set accepted by SessionBridge.
-   * @returns Completion when finite streams end or the pump is started for long-lived streams.
+   * @param dedupeSet - Optional streamed message dedupe set accepted by SessionBridge.
+   * @param projectPath - Optional project directory to filter stream events.
+   * @returns Completion once the background stream pump is started.
    */
-  async subscribe(threadId: string, sessionId: string, client: OpenCodeStreamClient, dedupeSet?: Set<string>): Promise<void> {
-    void dedupeSet;
+  async subscribe(
+    threadId: string,
+    sessionId: string,
+    client: OpenCodeStreamClient,
+    dedupeSet?: Set<string>,
+    projectPath?: string,
+  ): Promise<void> {
     const thread = this.options.getThread(threadId);
     if (!thread) {
       return;
     }
 
-    const state: SubscriptionState = { cancelled: false };
+    const state: SubscriptionState = {
+      cancelled: false,
+      pumpPromise: Promise.resolve(),
+    };
     this.subscriptions.set(threadId, state);
-    await this.pump(threadId, sessionId, client, thread, state);
+    state.pumpPromise = this.pump(threadId, sessionId, client, thread, state, dedupeSet, projectPath);
+  }
+
+  /**
+   * Wait for the current stream pump to finish, useful for finite test streams.
+   * @param threadId - Discord thread ID to wait for.
+   * @returns Completion once the current pump settles.
+   */
+  async waitForIdle(threadId: string): Promise<void> {
+    await this.subscriptions.get(threadId)?.pumpPromise;
   }
 
   /**
@@ -167,8 +187,10 @@ export class StreamHandler {
     client: OpenCodeStreamClient,
     thread: StreamThread,
     state: SubscriptionState,
+    dedupeSet: Set<string> | undefined,
+    projectPath: string | undefined,
   ): Promise<void> {
-    const context = this.createContext(threadId, sessionId, client, thread);
+    const context = this.createContext(threadId, sessionId, client, thread, dedupeSet, projectPath);
     let failures = 0;
 
     while (!state.cancelled) {
@@ -180,8 +202,10 @@ export class StreamHandler {
           }
           await this.handleEvent(context, event);
         }
+        await this.render(context, true);
         return;
       } catch {
+        await this.render(context, true);
         failures += 1;
         if (failures > this.maxRetries) {
           await thread.send(`Stream disconnected after ${this.maxRetries} retries.`);
@@ -192,17 +216,27 @@ export class StreamHandler {
     }
   }
 
-  private createContext(threadId: string, sessionId: string, client: OpenCodeStreamClient, thread: StreamThread) {
+  private createContext(
+    threadId: string,
+    sessionId: string,
+    client: OpenCodeStreamClient,
+    thread: StreamThread,
+    dedupeSet: Set<string> | undefined,
+    projectPath: string | undefined,
+  ) {
     return {
       threadId,
       sessionId,
       client,
       thread,
+      dedupeSet,
+      projectPath,
       aggregate: '',
       parts: new Map<string, string>(),
       currentMessage: undefined as StreamMessage | undefined,
       sentChunks: 0,
       lastEditAt: Number.NEGATIVE_INFINITY,
+      lastRenderedContent: undefined as string | undefined,
       runningTools: new Map<string, string>(),
       tableDetected: false,
     };
@@ -210,8 +244,17 @@ export class StreamHandler {
 
   private async handleEvent(context: ReturnType<StreamHandler['createContext']>, event: GlobalEventLike): Promise<void> {
     const { payload } = event;
-    if (payload.sessionID && payload.sessionID !== context.sessionId) {
+    if (context.projectPath && event.directory && event.directory !== context.projectPath) {
       return;
+    }
+
+    if (isSessionScopedEvent(payload.type)) {
+      if (payload.sessionID !== context.sessionId) {
+        return;
+      }
+      if (payload.messageID) {
+        context.dedupeSet?.add(payload.messageID);
+      }
     }
 
     if (payload.type === 'message.part.delta') {
@@ -276,6 +319,10 @@ export class StreamHandler {
   }
 
   private async render(context: ReturnType<StreamHandler['createContext']>, forceEdit = false): Promise<void> {
+    if (!context.aggregate && context.runningTools.size === 0) {
+      return;
+    }
+
     const chunks = splitMessage(context.aggregate || '');
     for (let index = context.sentChunks; index < chunks.length - 1; index += 1) {
       if (context.currentMessage) {
@@ -291,13 +338,15 @@ export class StreamHandler {
     if (!context.currentMessage) {
       context.currentMessage = await context.thread.send(content);
       context.lastEditAt = this.now();
+      context.lastRenderedContent = content;
       return;
     }
 
     const currentTime = this.now();
-    if (forceEdit || currentTime - context.lastEditAt >= this.editThrottleMs) {
+    if (content !== context.lastRenderedContent && (forceEdit || currentTime - context.lastEditAt >= this.editThrottleMs)) {
       await context.currentMessage.edit(content);
       context.lastEditAt = currentTime;
+      context.lastRenderedContent = content;
     }
   }
 
@@ -317,6 +366,10 @@ export class StreamHandler {
       setTimeout(resolve, ms);
     });
   }
+}
+
+function isSessionScopedEvent(type: string): boolean {
+  return type === 'message.part.delta' || type === 'message.part.updated' || type === 'question.asked' || type === 'permission.asked';
 }
 
 function getToolStatus(part: Record<string, unknown>): string | undefined {

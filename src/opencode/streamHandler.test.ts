@@ -20,6 +20,14 @@ function failingStream(error: Error): AsyncIterable<GlobalEventLike> {
   };
 }
 
+function neverEndingStream(): AsyncIterable<GlobalEventLike> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      await new Promise<never>(() => undefined);
+    },
+  };
+}
+
 function textDelta(delta: string, partID = 'part-1', sessionID = 'session-1'): GlobalEventLike {
   return {
     directory: '/repo',
@@ -83,9 +91,83 @@ describe('StreamHandler', () => {
     const client = createClient([stream([textDelta('Hello'), textDelta(' world')])]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(sends).toEqual(['Hello']);
     expect(edits.at(-1)).toBe('Hello world');
+  });
+
+  it('filters stream events by project directory when projectPath is provided', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        { directory: '/other', payload: { type: 'message.part.delta', sessionID: 'session-1', partID: 'part-1', field: 'text', delta: 'noise' } },
+        { directory: '/repo', payload: { type: 'message.part.delta', sessionID: 'session-1', partID: 'part-1', field: 'text', delta: 'signal' } },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client, undefined, '/repo');
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['signal']);
+  });
+
+  it('returns promptly after starting a never-ending stream pump', async () => {
+    const { thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([neverEndingStream()]);
+
+    const result = await Promise.race([handler.subscribe('thread-1', 'session-1', client), Promise.resolve('blocked')]);
+    handler.unsubscribe('thread-1');
+
+    expect(result).not.toBe('blocked');
+  });
+
+  it('tracks streamed message IDs in the provided dedupe set', async () => {
+    const { thread } = createThread();
+    const handler = createHandler({}, thread);
+    const dedupeSet = new Set<string>();
+    const client = createClient([
+      stream([
+        { directory: '/repo', payload: { type: 'message.part.delta', sessionID: 'session-1', messageID: 'msg-1', partID: 'part-1', field: 'text', delta: 'A' } },
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: { id: 'tool-1', type: 'tool', tool: 'bash', state: { status: 'running' } },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client, dedupeSet);
+    await handler.waitForIdle('thread-1');
+
+    expect(dedupeSet.has('msg-1')).toBe(true);
+  });
+
+  it('ignores session-scoped events without a session ID', async () => {
+    const { thread, sends } = createThread();
+    const questionHandler = { handleQuestionEvent: vi.fn(async () => undefined) };
+    const permissionHandler = { handlePermissionEvent: vi.fn(async () => undefined) };
+    const handler = createHandler({ questionHandler, permissionHandler }, thread);
+    const client = createClient([
+      stream([
+        { directory: '/repo', payload: { type: 'message.part.delta', partID: 'part-1', field: 'text', delta: 'noise' } },
+        { directory: '/repo', payload: { type: 'question.asked', request: { id: 'q1' } } },
+        { directory: '/repo', payload: { type: 'permission.asked', request: { id: 'p1' } } },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual([]);
+    expect(questionHandler.handleQuestionEvent).not.toHaveBeenCalled();
+    expect(permissionHandler.handlePermissionEvent).not.toHaveBeenCalled();
   });
 
   it('splits long streamed messages at formatter boundaries', async () => {
@@ -94,6 +176,7 @@ describe('StreamHandler', () => {
     const client = createClient([stream([textDelta(`${'a'.repeat(1801)}\n\n${'b'.repeat(20)}`)])]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(sends.length).toBeGreaterThan(1);
     expect(sends.every((content) => content.length <= 1800)).toBe(true);
@@ -107,6 +190,7 @@ describe('StreamHandler', () => {
     const client = createClient([stream([textDelta(table)])]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(tableHandler.handleTable).toHaveBeenCalledWith('thread-1', table);
   });
@@ -129,6 +213,7 @@ describe('StreamHandler', () => {
     ]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(edits.at(-1)).toContain('Running: bash');
   });
@@ -146,6 +231,7 @@ describe('StreamHandler', () => {
     ]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(questionHandler.handleQuestionEvent).toHaveBeenCalledWith('thread-1', expect.objectContaining({ type: 'question.asked' }), client);
     expect(permissionHandler.handlePermissionEvent).toHaveBeenCalledWith('thread-1', expect.objectContaining({ type: 'permission.asked' }), client);
@@ -158,9 +244,22 @@ describe('StreamHandler', () => {
     const client = createClient([stream([textDelta('A'), textDelta('B'), textDelta('C'), textDelta('D')])]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(message.edit).toHaveBeenCalledTimes(1);
     expect(message.edit).toHaveBeenCalledWith('ABCD');
+  });
+
+  it('flushes final content when a finite stream ends before throttle elapses', async () => {
+    const { thread, edits } = createThread();
+    const times = [0, 100, 200];
+    const handler = createHandler({ editThrottleMs: 1000, now: () => times.shift() ?? 200 }, thread);
+    const client = createClient([stream([textDelta('A'), textDelta('B'), textDelta('C')])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(edits.at(-1)).toBe('ABC');
   });
 
   it('reconnects three times and notifies the thread after repeated SSE failures', async () => {
@@ -174,6 +273,7 @@ describe('StreamHandler', () => {
     ]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
 
     expect(client.global.event).toHaveBeenCalledTimes(4);
     expect(sends.at(-1)).toContain('Stream disconnected after 3 retries.');
