@@ -194,6 +194,60 @@ describe('PermissionHandler', () => {
     expect(warn.mock.calls[0]?.[0]).toContain('Permission interaction handling failed');
   });
 
+  it('keeps a rejected button reply pending so a later button click can answer', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockRejectedValueOnce(new Error('network down'));
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const failedInteraction = await collector.emitCollect('allow_once');
+    expect(failedInteraction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+
+    const retryInteraction = await collector.emitCollect('reject');
+
+    expect(client.permission.reply).toHaveBeenCalledTimes(2);
+    expect(client.permission.reply).toHaveBeenNthCalledWith(2, { requestID: 'request-1', reply: 'reject' });
+    expect(retryInteraction.update).toHaveBeenCalledWith({ content: 'Permission rejected.', components: [] });
+    expect(collector.stop).toHaveBeenCalledWith('answered');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores duplicate button clicks while a reply is in flight', async () => {
+    const { collector, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    let resolveReply: ((value: unknown) => void) | undefined;
+    vi.mocked(client.permission.reply).mockImplementation(
+      async () =>
+        new Promise((resolve) => {
+          resolveReply = resolve;
+        }),
+    );
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const firstInteractionPromise = collector.emitCollect('allow_once');
+    const duplicateInteraction = await collector.emitCollect('reject');
+
+    expect(client.permission.reply).toHaveBeenCalledTimes(1);
+    expect(duplicateInteraction.update).not.toHaveBeenCalled();
+
+    resolveReply?.(undefined);
+    const firstInteraction = await firstInteractionPromise;
+    await vi.waitFor(() => {
+      expect(firstInteraction.update).toHaveBeenCalledWith({ content: 'Permission allowed once.', components: [] });
+    });
+  });
+
   it('contains button SDK error envelopes and updates the interaction with a failure notice', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { collector, thread } = createThread();
@@ -249,5 +303,28 @@ describe('PermissionHandler', () => {
     expect(sends.at(-1)?.content).toBe('Permission timeout handling failed. Please try again.');
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain('Permission timeout handling failed');
+  });
+
+  it('keeps an SDK error button reply pending so timeout can reject the request', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, sends, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockResolvedValueOnce({ error: { message: 'failed' } });
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const failedInteraction = await collector.emitCollect('allow_once');
+    expect(failedInteraction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+
+    await collector.emitEnd('time');
+
+    expect(client.permission.reply).toHaveBeenCalledTimes(2);
+    expect(client.permission.reply).toHaveBeenNthCalledWith(2, { requestID: 'request-1', reply: 'reject' });
+    expect(sends.at(-1)?.content).toBe('Permission request timed out. The request was rejected.');
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

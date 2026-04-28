@@ -182,12 +182,18 @@ export class PermissionHandler {
 
     const message = await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
     let answered = false;
+    let submitting = false;
     const collector = message.createMessageComponentCollector({ time: this.timeoutMs });
 
     collector.on('collect', (interaction) => {
-      void this.handleCollect(interaction, request, client, collector, () => answered, () => {
+      void this.handleCollect(interaction, request, client, collector, () => answered || submitting, () => {
+        submitting = true;
+      }, () => {
+        submitting = false;
+      }, () => {
         answered = true;
       }).catch((error: unknown) => {
+        submitting = false;
         logger.warn('Permission interaction handling failed', { code: ErrorCode.PERMISSION_DENIED, requestID: request.id, error });
         void interaction.update?.({ content: 'Permission response failed. Please try again.', components: [] }).catch((updateError: unknown) => {
           logger.warn('Permission interaction failure notice failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error: updateError });
@@ -213,6 +219,8 @@ export class PermissionHandler {
     client: PermissionClient,
     collector: PermissionCollector,
     isAnswered: () => boolean,
+    markSubmitting: () => void,
+    clearSubmitting: () => void,
     markAnswered: () => void,
   ): Promise<void> {
     const reply = this.getReplyForCustomId(interaction.customId);
@@ -220,8 +228,10 @@ export class PermissionHandler {
       return;
     }
 
-    markAnswered();
+    markSubmitting();
     this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply }), ErrorCode.PERMISSION_DENIED);
+    clearSubmitting();
+    markAnswered();
     await interaction.update?.({ content: this.createAnsweredNotice(reply), components: [] });
     collector.stop?.('answered');
   }
