@@ -1,0 +1,276 @@
+import { BotError, ErrorCode } from '../utils/errors.js';
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+type PermissionReply = 'once' | 'always' | 'reject';
+
+/** OpenCode permission request payload. */
+export interface PermissionRequest {
+  id: string;
+  sessionID: string;
+  permission: string;
+  patterns: string[];
+  metadata?: unknown;
+  always?: string[];
+}
+
+/** OpenCode client subset required to answer permission requests. */
+export interface PermissionClient {
+  permission: {
+    /**
+     * Reply to an OpenCode permission request.
+     * @param input - Request ID and permission decision.
+     * @returns OpenCode reply result.
+     */
+    reply(input: { requestID: string; reply: PermissionReply }): Promise<unknown>;
+  };
+}
+
+/** Discord thread subset required by permission handling. */
+export interface PermissionThread {
+  /**
+   * Send a message or embed payload to the thread.
+   * @param payload - Message content or embed payload.
+   * @returns Sent Discord message.
+   */
+  send(payload: string | { embeds?: unknown[]; components?: unknown[]; content?: string }): Promise<PermissionMessage>;
+}
+
+/** Discord message subset required by permission handling. */
+export interface PermissionMessage {
+  /**
+   * Create a component collector for permission button clicks.
+   * @param options - Collector timeout options.
+   * @returns Component collector.
+   */
+  createMessageComponentCollector(options: { time: number }): PermissionCollector;
+
+  /**
+   * Edit the permission message after an answer or timeout.
+   * @param payload - Replacement message payload.
+   * @returns Discord API edit result.
+   */
+  edit?(payload: { embeds?: unknown[]; components?: unknown[]; content?: string }): Promise<unknown>;
+}
+
+/** Discord component collector subset required by permission handling. */
+export interface PermissionCollector {
+  /**
+   * Register a collect handler for button interactions.
+   * @param event - Collector event name.
+   * @param callback - Handler invoked with the collected interaction.
+   * @returns This collector.
+   */
+  on(event: 'collect', callback: (interaction: PermissionInteraction) => void | Promise<void>): PermissionCollector;
+
+  /**
+   * Register an end handler for timeout handling.
+   * @param event - Collector event name.
+   * @param callback - Handler invoked when collection ends.
+   * @returns This collector.
+   */
+  on(event: 'end', callback: (collected: unknown, reason: string) => void | Promise<void>): PermissionCollector;
+
+  /**
+   * Stop the collector after a permission decision.
+   * @param reason - Optional stop reason.
+   * @returns Nothing.
+   */
+  stop?(reason?: string): void;
+}
+
+/** Discord button interaction subset required by permission handling. */
+export interface PermissionInteraction {
+  customId: string;
+
+  /**
+   * Acknowledge and update the button message.
+   * @param payload - Interaction update payload.
+   * @returns Discord API update result.
+   */
+  update?(payload: { embeds?: unknown[]; components?: unknown[]; content?: string }): Promise<unknown>;
+}
+
+/** Channel permission handling configuration. */
+export interface PermissionChannelConfig {
+  permissions?: 'auto' | 'interactive';
+}
+
+/** Options for constructing a permission handler. */
+export interface PermissionHandlerOptions {
+  /**
+   * Resolve a Discord thread by ID.
+   * @param threadId - Discord thread ID.
+   * @returns Thread when available, otherwise undefined.
+   */
+  getThread(threadId: string): PermissionThread | undefined;
+
+  /**
+   * Resolve channel configuration by Discord thread ID.
+   * @param threadId - Discord thread ID.
+   * @returns Channel config when available, otherwise undefined.
+   */
+  getChannelConfig(threadId: string): PermissionChannelConfig | undefined;
+
+  timeoutMs?: number;
+}
+
+interface PermissionEventLike {
+  request?: unknown;
+}
+
+interface PermissionEmbed {
+  title: string;
+  description: string;
+}
+
+interface PermissionButton {
+  customId: string;
+  label: string;
+  style: string;
+}
+
+interface PermissionActionRow {
+  components: PermissionButton[];
+}
+
+interface SdkErrorEnvelope {
+  error: {
+    message?: string;
+  };
+}
+
+/** Handles OpenCode permission requests with auto or interactive Discord replies. */
+export class PermissionHandler {
+  private readonly timeoutMs: number;
+
+  /**
+   * Create a permission handler.
+   * @param options - Permission handler dependencies and timing configuration.
+   * @returns PermissionHandler instance.
+   */
+  public constructor(private readonly options: PermissionHandlerOptions) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * Handle a permission request from OpenCode.
+   * @param threadId - Discord thread ID receiving the permission request.
+   * @param event - OpenCode permission event or direct request payload.
+   * @param client - OpenCode client for replies.
+   * @returns Completion once the request is auto-answered or posted for interaction.
+   */
+  public async handlePermissionEvent(threadId: string, event: unknown, client: PermissionClient): Promise<void> {
+    const request = this.extractRequest(event);
+    const config = this.options.getChannelConfig(threadId);
+    const mode = config?.permissions ?? 'auto';
+
+    if (mode === 'auto') {
+      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'always' }), ErrorCode.PERMISSION_DENIED);
+      return;
+    }
+
+    const thread = this.options.getThread(threadId);
+    if (!thread) {
+      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_DENIED);
+      return;
+    }
+
+    const message = await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
+    let answered = false;
+    const collector = message.createMessageComponentCollector({ time: this.timeoutMs });
+
+    collector.on('collect', async (interaction) => {
+      const reply = this.getReplyForCustomId(interaction.customId);
+      if (!reply || answered) {
+        return;
+      }
+
+      answered = true;
+      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply }), ErrorCode.PERMISSION_DENIED);
+      await interaction.update?.({ content: this.createAnsweredNotice(reply), components: [] });
+      collector.stop?.('answered');
+    });
+
+    collector.on('end', async (_collected, reason) => {
+      if (answered || reason !== 'time') {
+        return;
+      }
+
+      answered = true;
+      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_TIMEOUT);
+      await message.edit?.({ content: 'Permission request timed out. The request was rejected.', components: [] });
+    });
+  }
+
+  private extractRequest(event: unknown): PermissionRequest {
+    const candidate = this.isPermissionEventLike(event) && event.request ? event.request : event;
+    if (!this.isPermissionRequest(candidate)) {
+      throw new BotError(ErrorCode.PERMISSION_DENIED, 'Invalid permission request payload');
+    }
+    return candidate;
+  }
+
+  private isPermissionEventLike(value: unknown): value is PermissionEventLike {
+    return typeof value === 'object' && value !== null && 'request' in value;
+  }
+
+  private isPermissionRequest(value: unknown): value is PermissionRequest {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    const request = value as Partial<PermissionRequest>;
+    return typeof request.id === 'string' && typeof request.sessionID === 'string' && typeof request.permission === 'string' && Array.isArray(request.patterns);
+  }
+
+  private createEmbed(request: PermissionRequest): PermissionEmbed {
+    return {
+      title: 'Permission Request',
+      description: [`Permission: ${request.permission}`, `Patterns: ${request.patterns.join(', ')}`].join('\n'),
+    };
+  }
+
+  private createActionRow(): PermissionActionRow {
+    return {
+      components: [
+        { customId: 'allow_once', label: 'Allow Once', style: 'primary' },
+        { customId: 'allow_always', label: 'Always', style: 'success' },
+        { customId: 'reject', label: 'Reject', style: 'danger' },
+      ],
+    };
+  }
+
+  private getReplyForCustomId(customId: string): PermissionReply | undefined {
+    if (customId === 'allow_once') {
+      return 'once';
+    }
+    if (customId === 'allow_always') {
+      return 'always';
+    }
+    if (customId === 'reject') {
+      return 'reject';
+    }
+    return undefined;
+  }
+
+  private createAnsweredNotice(reply: PermissionReply): string {
+    if (reply === 'reject') {
+      return 'Permission rejected.';
+    }
+    return reply === 'always' ? 'Permission allowed always.' : 'Permission allowed once.';
+  }
+
+  private assertNoSdkError(result: unknown, code: ErrorCode): void {
+    if (this.isSdkErrorEnvelope(result)) {
+      throw new BotError(code, result.error.message ?? 'OpenCode permission request failed');
+    }
+  }
+
+  private isSdkErrorEnvelope(value: unknown): value is SdkErrorEnvelope {
+    if (typeof value !== 'object' || value === null || !('error' in value)) {
+      return false;
+    }
+    const result = value as { error?: unknown };
+    return result.error !== null && result.error !== undefined;
+  }
+}
