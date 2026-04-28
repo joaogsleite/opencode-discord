@@ -239,6 +239,11 @@ export class QuestionHandler {
   }
 
   private getValidationError(request: QuestionRequest): BotError | undefined {
+    const malformedQuestion = request.questions.find((question) => !this.isQuestionInfo(question));
+    if (malformedQuestion) {
+      return new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Invalid question entry', { requestID: request.id });
+    }
+
     const invalidQuestion = request.questions.find((question) => question.options.length > MAX_LETTERED_OPTIONS);
     if (invalidQuestion) {
       return new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Question has too many options for lettered answers', {
@@ -248,6 +253,27 @@ export class QuestionHandler {
       });
     }
     return undefined;
+  }
+
+  private isQuestionInfo(value: unknown): value is QuestionInfo {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+
+    const question = value as Partial<QuestionInfo>;
+    return typeof question.header === 'string'
+      && typeof question.question === 'string'
+      && Array.isArray(question.options)
+      && question.options.every((option) => this.isQuestionOption(option));
+  }
+
+  private isQuestionOption(value: unknown): value is QuestionOption {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+
+    const option = value as Partial<QuestionOption>;
+    return typeof option.label === 'string' && typeof option.description === 'string';
   }
 
   private resetTimer(threadId: string, state: PendingQuestionState): void {

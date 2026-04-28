@@ -140,6 +140,26 @@ describe('PermissionHandler', () => {
     expect(sends[0]?.components).toEqual(permissionButtons);
   });
 
+  it('rejects the permission request when posting the interactive prompt fails', async () => {
+    const thread: PermissionThread = {
+      send: vi.fn(async () => {
+        throw new Error('missing permissions');
+      }),
+    };
+    const handler = createHandler({}, thread);
+    const client = createClient();
+
+    await expect(
+      handler.handlePermissionEvent(
+        'thread-1',
+        { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+        client,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(client.permission.reply).toHaveBeenCalledWith({ requestID: 'request-1', reply: 'reject' });
+  });
+
   it.each([
     ['allow_once', 'once'],
     ['allow_always', 'always'],

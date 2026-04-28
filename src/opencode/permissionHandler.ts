@@ -180,7 +180,11 @@ export class PermissionHandler {
       return;
     }
 
-    const message = await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
+    const message = await this.postInteractiveRequest(thread, request, client);
+    if (message === undefined) {
+      return;
+    }
+
     let answered = false;
     let submitting = false;
     let timeoutPending = false;
@@ -227,6 +231,16 @@ export class PermissionHandler {
         });
       });
     });
+  }
+
+  private async postInteractiveRequest(thread: PermissionThread, request: PermissionRequest, client: PermissionClient): Promise<PermissionMessage | undefined> {
+    try {
+      return await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
+    } catch (error) {
+      logger.warn('Permission prompt posting failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error });
+      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_DENIED);
+      return undefined;
+    }
   }
 
   private async handleCollect(
