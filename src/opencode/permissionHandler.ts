@@ -183,6 +183,7 @@ export class PermissionHandler {
     const message = await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
     let answered = false;
     let submitting = false;
+    let timeoutPending = false;
     const collector = message.createMessageComponentCollector({ time: this.timeoutMs });
 
     collector.on('collect', (interaction) => {
@@ -195,6 +196,17 @@ export class PermissionHandler {
       }).catch((error: unknown) => {
         submitting = false;
         logger.warn('Permission interaction handling failed', { code: ErrorCode.PERMISSION_DENIED, requestID: request.id, error });
+        if (timeoutPending) {
+          void this.handleEnd('time', request, client, message, () => answered, () => {
+            answered = true;
+          }).catch((timeoutError: unknown) => {
+            logger.warn('Permission timeout handling failed', { code: ErrorCode.PERMISSION_TIMEOUT, requestID: request.id, error: timeoutError });
+            void message.edit?.({ content: 'Permission timeout handling failed. Please try again.', components: [] }).catch((editError: unknown) => {
+              logger.warn('Permission timeout failure notice failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error: editError });
+            });
+          });
+          return;
+        }
         void interaction.update?.({ content: 'Permission response failed. Please try again.', components: [] }).catch((updateError: unknown) => {
           logger.warn('Permission interaction failure notice failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error: updateError });
         });
@@ -202,6 +214,10 @@ export class PermissionHandler {
     });
 
     collector.on('end', (_collected, reason) => {
+      if (reason === 'time' && submitting) {
+        timeoutPending = true;
+        return;
+      }
       void this.handleEnd(reason, request, client, message, () => answered, () => {
         answered = true;
       }).catch((error: unknown) => {

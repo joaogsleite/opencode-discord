@@ -248,6 +248,75 @@ describe('PermissionHandler', () => {
     });
   });
 
+  it('does not timeout reject when an in-flight button reply later succeeds', async () => {
+    const { collector, sends, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    let resolveReply: ((value: unknown) => void) | undefined;
+    vi.mocked(client.permission.reply).mockImplementation(
+      async () =>
+        new Promise((resolve) => {
+          resolveReply = resolve;
+        }),
+    );
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const interactionPromise = collector.emitCollect('allow_once');
+
+    await collector.emitEnd('time');
+
+    expect(client.permission.reply).toHaveBeenCalledTimes(1);
+    expect(client.permission.reply).toHaveBeenCalledWith({ requestID: 'request-1', reply: 'once' });
+    expect(sends.at(-1)?.content).not.toBe('Permission request timed out. The request was rejected.');
+
+    resolveReply?.(undefined);
+    const interaction = await interactionPromise;
+    await vi.waitFor(() => {
+      expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission allowed once.', components: [] });
+    });
+    expect(client.permission.reply).toHaveBeenCalledTimes(1);
+  });
+
+  it('timeout rejects once when an in-flight button reply fails after timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, sends, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    let rejectReply: ((error: unknown) => void) | undefined;
+    vi.mocked(client.permission.reply)
+      .mockImplementationOnce(
+        async () =>
+          new Promise((_resolve, reject) => {
+            rejectReply = reject;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const interactionPromise = collector.emitCollect('allow_once');
+
+    await collector.emitEnd('time');
+
+    expect(client.permission.reply).toHaveBeenCalledTimes(1);
+    rejectReply?.(new Error('network down'));
+    await interactionPromise;
+    await vi.waitFor(() => {
+      expect(client.permission.reply).toHaveBeenCalledTimes(2);
+    });
+
+    expect(client.permission.reply).toHaveBeenNthCalledWith(2, { requestID: 'request-1', reply: 'reject' });
+    expect(sends.at(-1)?.content).toBe('Permission request timed out. The request was rejected.');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it('contains button SDK error envelopes and updates the interaction with a failure notice', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { collector, thread } = createThread();
