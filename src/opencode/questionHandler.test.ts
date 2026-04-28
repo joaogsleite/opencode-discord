@@ -270,7 +270,7 @@ describe('QuestionHandler', () => {
     expect(sends[0]?.embeds?.[0]?.description).toContain(instruction);
   });
 
-  it('throws before posting unsupported questions with more than 26 options', async () => {
+  it('rejects unsupported questions with more than 26 options before posting', async () => {
     const { thread } = createThread();
     const handler = createHandler({}, thread);
     const client = createClient();
@@ -286,7 +286,7 @@ describe('QuestionHandler', () => {
         },
         client,
       ),
-    ).rejects.toBeInstanceOf(BotError);
+    ).rejects.toMatchObject({ code: ErrorCode.QUESTION_INVALID_ANSWER });
     await expect(
       handler.handleQuestionEvent(
         'thread-1',
@@ -297,7 +297,8 @@ describe('QuestionHandler', () => {
         },
         client,
       ),
-    ).rejects.toMatchObject({ code: ErrorCode.QUESTION_INVALID_ANSWER });
+    ).rejects.toBeInstanceOf(BotError);
+    expect(client.question.reject).toHaveBeenCalledWith({ requestID: 'request-1' });
     expect(thread.send).not.toHaveBeenCalled();
     expect(handler.hasPendingQuestion('thread-1')).toBe(false);
   });

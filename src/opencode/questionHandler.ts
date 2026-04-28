@@ -122,7 +122,11 @@ export class QuestionHandler {
    */
   public async handleQuestionEvent(threadId: string, event: unknown, client: QuestionClient): Promise<void> {
     const request = this.extractRequest(event);
-    this.validateRequest(request);
+    const validationError = this.getValidationError(request);
+    if (validationError) {
+      this.assertNoSdkError(await client.question.reject({ requestID: request.id }), ErrorCode.QUESTION_INVALID_ANSWER);
+      throw validationError;
+    }
     const thread = this.options.getThread(threadId);
 
     if (!thread) {
@@ -234,15 +238,16 @@ export class QuestionHandler {
     return typeof request.id === 'string' && typeof request.sessionID === 'string' && Array.isArray(request.questions);
   }
 
-  private validateRequest(request: QuestionRequest): void {
+  private getValidationError(request: QuestionRequest): BotError | undefined {
     const invalidQuestion = request.questions.find((question) => question.options.length > MAX_LETTERED_OPTIONS);
     if (invalidQuestion) {
-      throw new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Question has too many options for lettered answers', {
+      return new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Question has too many options for lettered answers', {
         requestID: request.id,
         header: invalidQuestion.header,
         optionCount: invalidQuestion.options.length,
       });
     }
+    return undefined;
   }
 
   private resetTimer(threadId: string, state: PendingQuestionState): void {
