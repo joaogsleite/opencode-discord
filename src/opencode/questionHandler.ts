@@ -1,6 +1,9 @@
 import { BotError, ErrorCode } from '../utils/errors.js';
+import { createLogger } from '../utils/logger.js';
 
 const DEFAULT_TIMEOUT_MS = 300_000;
+const MAX_LETTERED_OPTIONS = 26;
+const logger = createLogger('QuestionHandler');
 
 /** OpenCode question option. */
 export interface QuestionOption {
@@ -84,6 +87,12 @@ interface QuestionEmbed {
   description: string;
 }
 
+interface SdkErrorEnvelope {
+  error: {
+    message?: string;
+  };
+}
+
 /** Handles OpenCode question events and Discord text answers. */
 export class QuestionHandler {
   private readonly pending = new Map<string, PendingQuestionState>();
@@ -113,10 +122,11 @@ export class QuestionHandler {
    */
   public async handleQuestionEvent(threadId: string, event: unknown, client: QuestionClient): Promise<void> {
     const request = this.extractRequest(event);
+    this.validateRequest(request);
     const thread = this.options.getThread(threadId);
 
     if (!thread) {
-      await client.question.reject({ requestID: request.id });
+      this.assertNoSdkError(await client.question.reject({ requestID: request.id }), ErrorCode.QUESTION_TIMEOUT);
       return;
     }
 
@@ -158,7 +168,7 @@ export class QuestionHandler {
     const thread = this.options.getThread(threadId);
     if (!thread) {
       this.clearPending(threadId);
-      await state.client.question.reject({ requestID: state.requestID });
+      this.assertNoSdkError(await state.client.question.reject({ requestID: state.requestID }), ErrorCode.QUESTION_TIMEOUT);
       return;
     }
 
@@ -184,8 +194,11 @@ export class QuestionHandler {
       return;
     }
 
+    this.assertNoSdkError(
+      await state.client.question.reply({ requestID: state.requestID, answers: state.collectedAnswers }),
+      ErrorCode.QUESTION_INVALID_ANSWER,
+    );
     this.clearPending(threadId);
-    await state.client.question.reply({ requestID: state.requestID, answers: state.collectedAnswers });
   }
 
   /**
@@ -221,13 +234,26 @@ export class QuestionHandler {
     return typeof request.id === 'string' && typeof request.sessionID === 'string' && Array.isArray(request.questions);
   }
 
+  private validateRequest(request: QuestionRequest): void {
+    const invalidQuestion = request.questions.find((question) => question.options.length > MAX_LETTERED_OPTIONS);
+    if (invalidQuestion) {
+      throw new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Question has too many options for lettered answers', {
+        requestID: request.id,
+        header: invalidQuestion.header,
+        optionCount: invalidQuestion.options.length,
+      });
+    }
+  }
+
   private resetTimer(threadId: string, state: PendingQuestionState): void {
     if (state.timer) {
       this.clearTimer(state.timer);
     }
 
     state.timer = this.setTimer(() => {
-      void this.handleTimeout(threadId, state);
+      this.handleTimeout(threadId, state).catch((error: unknown) => {
+        logger.warn('Question timeout handling failed', { code: ErrorCode.QUESTION_TIMEOUT, threadId, requestID: state.requestID, error });
+      });
     }, this.timeoutMs);
   }
 
@@ -237,7 +263,7 @@ export class QuestionHandler {
     }
 
     this.pending.delete(threadId);
-    await state.client.question.reject({ requestID: state.requestID });
+    this.assertNoSdkError(await state.client.question.reject({ requestID: state.requestID }), ErrorCode.QUESTION_TIMEOUT);
     const thread = this.options.getThread(threadId);
     if (thread) {
       await thread.send('Question timed out. The agent will continue without an answer.');
@@ -257,11 +283,21 @@ export class QuestionHandler {
       const letter = String.fromCharCode(97 + index);
       return `${letter}) ${option.label} - ${option.description}`;
     });
-    const instructions = question.multiple ? 'Reply with one or more letters separated by commas.' : 'Reply with a letter or text answer.';
+    const instructions = this.createInstructions(question);
     return {
       title: question.header,
       description: [question.question, ...optionLines, instructions].filter(Boolean).join('\n'),
     };
+  }
+
+  private createInstructions(question: QuestionInfo): string {
+    if (question.multiple) {
+      return question.custom === false
+        ? 'Reply with one or more letters (comma-separated).'
+        : 'Reply with one or more letters (comma-separated), or type a custom answer.';
+    }
+
+    return question.custom === false ? 'Reply with a letter.' : 'Reply with a letter, or type a custom answer.';
   }
 
   private parseAnswer(question: QuestionInfo, content: string): string[] | undefined {
@@ -292,5 +328,19 @@ export class QuestionHandler {
     }
 
     return undefined;
+  }
+
+  private assertNoSdkError(result: unknown, code: ErrorCode): void {
+    if (this.isSdkErrorEnvelope(result)) {
+      throw new BotError(code, result.error.message ?? 'OpenCode question request failed');
+    }
+  }
+
+  private isSdkErrorEnvelope(value: unknown): value is SdkErrorEnvelope {
+    if (typeof value !== 'object' || value === null || !('error' in value)) {
+      return false;
+    }
+    const result = value as { error?: unknown };
+    return result.error !== null && result.error !== undefined;
   }
 }
