@@ -278,4 +278,18 @@ describe('StreamHandler', () => {
     expect(client.global.event).toHaveBeenCalledTimes(4);
     expect(sends.at(-1)).toContain('Stream disconnected after 3 retries.');
   });
+
+  it('contains Discord send failures from the background pump', async () => {
+    const thread: StreamThread = {
+      send: vi.fn(async () => {
+        throw new Error('discord unavailable');
+      }),
+    };
+    const handler = createHandler({ maxRetries: 0 }, thread);
+    const client = createClient([failingStream(new Error('disconnect'))]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+
+    await expect(handler.waitForIdle('thread-1')).resolves.toBeUndefined();
+  });
 });

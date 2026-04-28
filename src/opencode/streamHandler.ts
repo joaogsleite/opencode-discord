@@ -1,4 +1,7 @@
 import { detectTable, splitMessage } from '../utils/formatter.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('StreamHandler');
 
 /** OpenCode global event shape used by the stream handler. */
 export interface GlobalEventLike {
@@ -156,7 +159,9 @@ export class StreamHandler {
       pumpPromise: Promise.resolve(),
     };
     this.subscriptions.set(threadId, state);
-    state.pumpPromise = this.pump(threadId, sessionId, client, thread, state, dedupeSet, projectPath);
+    state.pumpPromise = this.pump(threadId, sessionId, client, thread, state, dedupeSet, projectPath).catch((error: unknown) => {
+      logger.warn('Stream pump stopped after an unrecoverable error', { threadId, sessionId, error });
+    });
   }
 
   /**
@@ -205,10 +210,10 @@ export class StreamHandler {
         await this.render(context, true);
         return;
       } catch {
-        await this.render(context, true);
+        await this.safeRender(context);
         failures += 1;
         if (failures > this.maxRetries) {
-          await thread.send(`Stream disconnected after ${this.maxRetries} retries.`);
+          await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
           return;
         }
         await this.delay(this.retryDelayMs);
@@ -356,6 +361,22 @@ export class StreamHandler {
       return content;
     }
     return `${content}\n\nRunning: ${tools.join(', ')}`;
+  }
+
+  private async safeRender(context: ReturnType<StreamHandler['createContext']>): Promise<void> {
+    try {
+      await this.render(context, true);
+    } catch (error) {
+      logger.warn('Failed to render stream update during recovery', { threadId: context.threadId, sessionId: context.sessionId, error });
+    }
+  }
+
+  private async safeSend(thread: StreamThread, content: string, threadId: string, sessionId: string): Promise<void> {
+    try {
+      await thread.send(content);
+    } catch (error) {
+      logger.warn('Failed to send stream recovery notice', { threadId, sessionId, error });
+    }
   }
 
   private async delay(ms: number): Promise<void> {
