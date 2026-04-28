@@ -1,6 +1,8 @@
 import { BotError, ErrorCode } from '../utils/errors.js';
+import { createLogger } from '../utils/logger.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const logger = createLogger('PermissionHandler');
 
 type PermissionReply = 'once' | 'always' | 'reject';
 
@@ -125,12 +127,14 @@ interface PermissionEmbed {
 }
 
 interface PermissionButton {
+  type: 2;
   customId: string;
   label: string;
-  style: string;
+  style: 1 | 3 | 4;
 }
 
 interface PermissionActionRow {
+  type: 1;
   components: PermissionButton[];
 }
 
@@ -180,27 +184,63 @@ export class PermissionHandler {
     let answered = false;
     const collector = message.createMessageComponentCollector({ time: this.timeoutMs });
 
-    collector.on('collect', async (interaction) => {
-      const reply = this.getReplyForCustomId(interaction.customId);
-      if (!reply || answered) {
-        return;
-      }
-
-      answered = true;
-      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply }), ErrorCode.PERMISSION_DENIED);
-      await interaction.update?.({ content: this.createAnsweredNotice(reply), components: [] });
-      collector.stop?.('answered');
+    collector.on('collect', (interaction) => {
+      void this.handleCollect(interaction, request, client, collector, () => answered, () => {
+        answered = true;
+      }).catch((error: unknown) => {
+        logger.warn('Permission interaction handling failed', { code: ErrorCode.PERMISSION_DENIED, requestID: request.id, error });
+        void interaction.update?.({ content: 'Permission response failed. Please try again.', components: [] }).catch((updateError: unknown) => {
+          logger.warn('Permission interaction failure notice failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error: updateError });
+        });
+      });
     });
 
-    collector.on('end', async (_collected, reason) => {
-      if (answered || reason !== 'time') {
-        return;
-      }
-
-      answered = true;
-      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_TIMEOUT);
-      await message.edit?.({ content: 'Permission request timed out. The request was rejected.', components: [] });
+    collector.on('end', (_collected, reason) => {
+      void this.handleEnd(reason, request, client, message, () => answered, () => {
+        answered = true;
+      }).catch((error: unknown) => {
+        logger.warn('Permission timeout handling failed', { code: ErrorCode.PERMISSION_TIMEOUT, requestID: request.id, error });
+        void message.edit?.({ content: 'Permission timeout handling failed. Please try again.', components: [] }).catch((editError: unknown) => {
+          logger.warn('Permission timeout failure notice failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error: editError });
+        });
+      });
     });
+  }
+
+  private async handleCollect(
+    interaction: PermissionInteraction,
+    request: PermissionRequest,
+    client: PermissionClient,
+    collector: PermissionCollector,
+    isAnswered: () => boolean,
+    markAnswered: () => void,
+  ): Promise<void> {
+    const reply = this.getReplyForCustomId(interaction.customId);
+    if (!reply || isAnswered()) {
+      return;
+    }
+
+    markAnswered();
+    this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply }), ErrorCode.PERMISSION_DENIED);
+    await interaction.update?.({ content: this.createAnsweredNotice(reply), components: [] });
+    collector.stop?.('answered');
+  }
+
+  private async handleEnd(
+    reason: string,
+    request: PermissionRequest,
+    client: PermissionClient,
+    message: PermissionMessage,
+    isAnswered: () => boolean,
+    markAnswered: () => void,
+  ): Promise<void> {
+    if (isAnswered() || reason !== 'time') {
+      return;
+    }
+
+    markAnswered();
+    this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_TIMEOUT);
+    await message.edit?.({ content: 'Permission request timed out. The request was rejected.', components: [] });
   }
 
   private extractRequest(event: unknown): PermissionRequest {
@@ -232,10 +272,11 @@ export class PermissionHandler {
 
   private createActionRow(): PermissionActionRow {
     return {
+      type: 1,
       components: [
-        { customId: 'allow_once', label: 'Allow Once', style: 'primary' },
-        { customId: 'allow_always', label: 'Always', style: 'success' },
-        { customId: 'reject', label: 'Reject', style: 'danger' },
+        { type: 2, customId: 'allow_once', label: 'Allow Once', style: 1 },
+        { type: 2, customId: 'allow_always', label: 'Always', style: 3 },
+        { type: 2, customId: 'reject', label: 'Reject', style: 4 },
       ],
     };
   }

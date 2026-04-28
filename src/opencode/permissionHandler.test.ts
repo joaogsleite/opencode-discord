@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PermissionHandler } from './permissionHandler.js';
 import type {
   PermissionClient,
@@ -11,7 +11,7 @@ import type {
 
 interface SentPayload {
   embeds?: { title?: string; description?: string }[];
-  components?: { components?: { customId?: string; label?: string }[] }[];
+  components?: { components?: { customId?: string; label?: string; style?: number; type?: number }[]; type?: number }[];
   content?: string;
 }
 
@@ -89,6 +89,10 @@ function createHandler(options: Partial<PermissionHandlerOptions> = {}, thread =
 }
 
 describe('PermissionHandler', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('immediately replies always in auto mode without sending a Discord message', async () => {
     const { thread } = createThread();
     const handler = createHandler({ getChannelConfig: () => ({ permissions: 'auto' }) }, thread);
@@ -104,7 +108,7 @@ describe('PermissionHandler', () => {
     expect(thread.send).not.toHaveBeenCalled();
   });
 
-  it('posts an embed with allow and reject buttons in interactive mode', async () => {
+  it('posts an embed with Discord API-compatible allow and reject buttons in interactive mode', async () => {
     const { sends, thread } = createThread();
     const handler = createHandler({}, thread);
     const client = createClient();
@@ -122,10 +126,15 @@ describe('PermissionHandler', () => {
     expect(sends[0]?.embeds?.[0]?.title).toBe('Permission Request');
     expect(sends[0]?.embeds?.[0]?.description).toContain('edit');
     expect(sends[0]?.embeds?.[0]?.description).toContain('src/**/*.ts');
-    expect(sends[0]?.components?.[0]?.components).toEqual([
-      expect.objectContaining({ customId: 'allow_once', label: 'Allow Once' }),
-      expect.objectContaining({ customId: 'allow_always', label: 'Always' }),
-      expect.objectContaining({ customId: 'reject', label: 'Reject' }),
+    expect(sends[0]?.components).toEqual([
+      {
+        type: 1,
+        components: [
+          { type: 2, customId: 'allow_once', label: 'Allow Once', style: 1 },
+          { type: 2, customId: 'allow_always', label: 'Always', style: 3 },
+          { type: 2, customId: 'reject', label: 'Reject', style: 4 },
+        ],
+      },
     ]);
   });
 
@@ -164,5 +173,81 @@ describe('PermissionHandler', () => {
 
     expect(client.permission.reply).toHaveBeenCalledWith({ requestID: 'request-1', reply: 'reject' });
     expect(sends.at(-1)?.content).toBe('Permission request timed out. The request was rejected.');
+  });
+
+  it('contains button reply rejections and updates the interaction with a failure notice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockRejectedValueOnce(new Error('network down'));
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const interaction = await collector.emitCollect('allow_once');
+
+    expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('Permission interaction handling failed');
+  });
+
+  it('contains button SDK error envelopes and updates the interaction with a failure notice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockResolvedValueOnce({ error: { message: 'failed' } });
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    const interaction = await collector.emitCollect('allow_once');
+
+    expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('Permission interaction handling failed');
+  });
+
+  it('contains timeout reply failures and edits the message with a failure notice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, sends, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockRejectedValueOnce(new Error('network down'));
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    await collector.emitEnd('time');
+
+    expect(sends.at(-1)?.content).toBe('Permission timeout handling failed. Please try again.');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('Permission timeout handling failed');
+  });
+
+  it('contains timeout SDK error envelopes and edits the message with a failure notice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { collector, sends, thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockResolvedValueOnce({ error: { message: 'failed' } });
+
+    await handler.handlePermissionEvent(
+      'thread-1',
+      { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+      client,
+    );
+    await collector.emitEnd('time');
+
+    expect(sends.at(-1)?.content).toBe('Permission timeout handling failed. Please try again.');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('Permission timeout handling failed');
   });
 });
