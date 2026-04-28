@@ -1,0 +1,296 @@
+import { BotError, ErrorCode } from '../utils/errors.js';
+
+const DEFAULT_TIMEOUT_MS = 300_000;
+
+/** OpenCode question option. */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** OpenCode question information. */
+export interface QuestionInfo {
+  header: string;
+  question: string;
+  options: QuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+}
+
+/** OpenCode question request payload. */
+export interface QuestionRequest {
+  id: string;
+  sessionID: string;
+  questions: QuestionInfo[];
+}
+
+/** OpenCode client subset required to answer questions. */
+export interface QuestionClient {
+  question: {
+    /**
+     * Reply to an OpenCode question request.
+     * @param input - Request ID and collected answers.
+     * @returns OpenCode reply result.
+     */
+    reply(input: { requestID: string; answers: string[][] }): Promise<unknown>;
+
+    /**
+     * Reject an OpenCode question request.
+     * @param input - Request ID to reject.
+     * @returns OpenCode reject result.
+     */
+    reject(input: { requestID: string }): Promise<unknown>;
+  };
+}
+
+/** Discord thread subset required by question handling. */
+export interface QuestionThread {
+  /**
+   * Send a message or embed payload to the thread.
+   * @param payload - Message content or embed payload.
+   * @returns Discord API send result.
+   */
+  send(payload: string | { embeds?: unknown[]; content?: string }): Promise<unknown>;
+}
+
+/** Options for constructing a question handler. */
+export interface QuestionHandlerOptions {
+  /**
+   * Resolve a Discord thread by ID.
+   * @param threadId - Discord thread ID.
+   * @returns Thread when available, otherwise undefined.
+   */
+  getThread(threadId: string): QuestionThread | undefined;
+  timeoutMs?: number;
+  setTimeout?: (callback: () => void, delay: number) => unknown;
+  clearTimeout?: (timer: unknown) => void;
+}
+
+interface PendingQuestionState {
+  client: QuestionClient;
+  requestID: string;
+  questions: QuestionInfo[];
+  currentIndex: number;
+  collectedAnswers: string[][];
+  timer?: unknown;
+}
+
+interface QuestionEventLike {
+  request?: unknown;
+}
+
+interface QuestionEmbed {
+  title: string;
+  description: string;
+}
+
+/** Handles OpenCode question events and Discord text answers. */
+export class QuestionHandler {
+  private readonly pending = new Map<string, PendingQuestionState>();
+  private readonly timeoutMs: number;
+  private readonly setTimer: (callback: () => void, delay: number) => unknown;
+  private readonly clearTimer: (timer: unknown) => void;
+
+  /**
+   * Create a question handler.
+   * @param options - Question handler dependencies and timing configuration.
+   * @returns QuestionHandler instance.
+   */
+  public constructor(private readonly options: QuestionHandlerOptions) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.setTimer = options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
+    this.clearTimer = options.clearTimeout ?? ((timer: unknown) => {
+      globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>);
+    });
+  }
+
+  /**
+   * Handle a question request from OpenCode.
+   * @param threadId - Discord thread ID receiving the question.
+   * @param event - OpenCode question event or direct request payload.
+   * @param client - OpenCode client for replies.
+   * @returns Completion once the first question has been posted or rejected.
+   */
+  public async handleQuestionEvent(threadId: string, event: unknown, client: QuestionClient): Promise<void> {
+    const request = this.extractRequest(event);
+    const thread = this.options.getThread(threadId);
+
+    if (!thread) {
+      await client.question.reject({ requestID: request.id });
+      return;
+    }
+
+    this.clearPending(threadId);
+    const state: PendingQuestionState = {
+      client,
+      requestID: request.id,
+      questions: request.questions,
+      currentIndex: 0,
+      collectedAnswers: [],
+    };
+    this.pending.set(threadId, state);
+    this.resetTimer(threadId, state);
+    await this.showCurrentQuestion(thread, state);
+  }
+
+  /**
+   * Check whether a Discord thread has a pending OpenCode question.
+   * @param threadId - Discord thread ID to check.
+   * @returns True when a question is waiting for an answer.
+   */
+  public hasPendingQuestion(threadId: string): boolean {
+    return this.pending.has(threadId);
+  }
+
+  /**
+   * Handle a Discord message as an answer to the pending question.
+   * @param threadId - Discord thread ID receiving the answer.
+   * @param content - Raw user message content.
+   * @param correlationId - Optional correlation ID for invalid answer notices.
+   * @returns Completion once the answer has been processed.
+   */
+  public async handleQuestionAnswer(threadId: string, content: string, correlationId?: string): Promise<void> {
+    const state = this.pending.get(threadId);
+    if (!state) {
+      return;
+    }
+
+    const thread = this.options.getThread(threadId);
+    if (!thread) {
+      this.clearPending(threadId);
+      await state.client.question.reject({ requestID: state.requestID });
+      return;
+    }
+
+    const question = state.questions[state.currentIndex];
+    if (!question) {
+      return;
+    }
+
+    const answers = this.parseAnswer(question, content);
+    if (!answers) {
+      const suffix = correlationId ? ` *(ref: ${correlationId})*` : '';
+      await thread.send(`Invalid answer. Please choose one of the listed options.${suffix}`);
+      await this.showCurrentQuestion(thread, state);
+      return;
+    }
+
+    state.collectedAnswers.push(answers);
+    state.currentIndex += 1;
+
+    if (state.currentIndex < state.questions.length) {
+      this.resetTimer(threadId, state);
+      await this.showCurrentQuestion(thread, state);
+      return;
+    }
+
+    this.clearPending(threadId);
+    await state.client.question.reply({ requestID: state.requestID, answers: state.collectedAnswers });
+  }
+
+  /**
+   * Clear a pending question and its timeout for a Discord thread.
+   * @param threadId - Discord thread ID to clear.
+   * @returns Nothing.
+   */
+  public clearPending(threadId: string): void {
+    const state = this.pending.get(threadId);
+    if (state?.timer) {
+      this.clearTimer(state.timer);
+    }
+    this.pending.delete(threadId);
+  }
+
+  private extractRequest(event: unknown): QuestionRequest {
+    const candidate = this.isQuestionEventLike(event) && event.request ? event.request : event;
+    if (!this.isQuestionRequest(candidate)) {
+      throw new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Invalid question request payload');
+    }
+    return candidate;
+  }
+
+  private isQuestionEventLike(value: unknown): value is QuestionEventLike {
+    return typeof value === 'object' && value !== null && 'request' in value;
+  }
+
+  private isQuestionRequest(value: unknown): value is QuestionRequest {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    const request = value as Partial<QuestionRequest>;
+    return typeof request.id === 'string' && typeof request.sessionID === 'string' && Array.isArray(request.questions);
+  }
+
+  private resetTimer(threadId: string, state: PendingQuestionState): void {
+    if (state.timer) {
+      this.clearTimer(state.timer);
+    }
+
+    state.timer = this.setTimer(() => {
+      void this.handleTimeout(threadId, state);
+    }, this.timeoutMs);
+  }
+
+  private async handleTimeout(threadId: string, state: PendingQuestionState): Promise<void> {
+    if (this.pending.get(threadId) !== state) {
+      return;
+    }
+
+    this.pending.delete(threadId);
+    await state.client.question.reject({ requestID: state.requestID });
+    const thread = this.options.getThread(threadId);
+    if (thread) {
+      await thread.send('Question timed out. The agent will continue without an answer.');
+    }
+  }
+
+  private async showCurrentQuestion(thread: QuestionThread, state: PendingQuestionState): Promise<void> {
+    const question = state.questions[state.currentIndex];
+    if (!question) {
+      return;
+    }
+    await thread.send({ embeds: [this.createEmbed(question)] });
+  }
+
+  private createEmbed(question: QuestionInfo): QuestionEmbed {
+    const optionLines = question.options.map((option, index) => {
+      const letter = String.fromCharCode(97 + index);
+      return `${letter}) ${option.label} - ${option.description}`;
+    });
+    const instructions = question.multiple ? 'Reply with one or more letters separated by commas.' : 'Reply with a letter or text answer.';
+    return {
+      title: question.header,
+      description: [question.question, ...optionLines, instructions].filter(Boolean).join('\n'),
+    };
+  }
+
+  private parseAnswer(question: QuestionInfo, content: string): string[] | undefined {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const letterParts = trimmed.split(',').map((part) => part.trim().toLowerCase()).filter(Boolean);
+    const allLetters = letterParts.length > 0 && letterParts.every((part) => /^[a-z]$/.test(part));
+    if (allLetters) {
+      if (!question.multiple && letterParts.length > 1) {
+        return undefined;
+      }
+      const labels: string[] = [];
+      for (const part of letterParts) {
+        const option = question.options[part.charCodeAt(0) - 97];
+        if (!option) {
+          return undefined;
+        }
+        labels.push(option.label);
+      }
+      return labels;
+    }
+
+    if (question.custom !== false) {
+      return [trimmed];
+    }
+
+    return undefined;
+  }
+}
