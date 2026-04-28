@@ -288,7 +288,7 @@ function parseModel(model: string | null | undefined): { model?: { providerID?: 
 
   const separatorIndex = model.indexOf('/');
   if (separatorIndex === -1) {
-    return { model: { modelID: model } };
+    throw new BotError(ErrorCode.MODEL_NOT_FOUND, 'Model must include a provider ID', { model });
   }
 
   return {

@@ -251,6 +251,32 @@ describe('SessionBridge', () => {
     expect(stateManager.sessions.get('thread-1')).toEqual(session);
   });
 
+  it('rejects providerless stored models before calling the SDK or updating state', async () => {
+    const { bridge, stateManager } = createBridge(2000);
+    const client = createClient();
+    const session: SessionState = {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: 'claude',
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    };
+    stateManager.sessions.set('thread-1', session);
+
+    await expect(bridge.sendPrompt('thread-1', { client, content: 'hello' })).rejects.toMatchObject({
+      code: ErrorCode.MODEL_NOT_FOUND,
+    });
+
+    expect(client.session.promptAsync).not.toHaveBeenCalled();
+    expect(stateManager.setSession).not.toHaveBeenCalled();
+    expect(stateManager.sessions.get('thread-1')).toEqual(session);
+  });
+
   it('throws when abort returns an SDK error envelope', async () => {
     const { bridge, stateManager } = createBridge();
     const client = createClient({ abort: vi.fn(async () => ({ error: { name: 'AbortFailed' } })) });
