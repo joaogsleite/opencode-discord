@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { watch as chokidarWatch } from 'chokidar';
 import { parse as parseYaml } from 'yaml';
 import { configSchema, type ValidatedConfig } from './schema.js';
 import type { ChannelConfig } from './types.js';
@@ -10,10 +11,33 @@ const logger = createLogger('ConfigLoader');
 /** Callback invoked after a config reload succeeds. */
 export type ChangeCallback = (config: ValidatedConfig) => void;
 
+/** Callback invoked when a successful reload removes a channel mapping. */
+export type ChannelRemovedCallback = (
+  guildId: string,
+  channelId: string,
+  channelConfig: ChannelConfig,
+) => Promise<void> | void;
+
+/** Minimal watcher interface used by ConfigLoader. */
+export interface Watcher {
+  on(event: 'change', callback: () => Promise<void> | void): Watcher;
+  close(): Promise<void> | void;
+}
+
+/** Factory used to create a file watcher. */
+export type WatcherFactory = (configPath: string) => Watcher;
+
+/** Options for config file hot-reload watching. */
+export interface WatchOptions {
+  onChannelRemoved?: ChannelRemovedCallback;
+  watcherFactory?: WatcherFactory;
+}
+
 /** Loads, validates, and exposes bot configuration from a YAML file. */
 export class ConfigLoader {
   private config: ValidatedConfig | null = null;
   private readonly callbacks: ChangeCallback[] = [];
+  private watcher: Watcher | null = null;
 
   /**
    * Create a config loader for a YAML file path.
@@ -27,6 +51,17 @@ export class ConfigLoader {
    * @throws BotError with CONFIG_INVALID if reading, YAML parsing, or validation fails
    */
   public async load(): Promise<void> {
+    const parsedConfig = this.readConfig();
+
+    this.config = parsedConfig;
+    logger.info('Config loaded successfully', { servers: parsedConfig.servers.length });
+
+    for (const callback of this.callbacks) {
+      callback(parsedConfig);
+    }
+  }
+
+  private readConfig(): ValidatedConfig {
     let raw: string;
 
     try {
@@ -58,12 +93,7 @@ export class ConfigLoader {
       });
     }
 
-    this.config = result.data;
-    logger.info('Config loaded successfully', { servers: result.data.servers.length });
-
-    for (const callback of this.callbacks) {
-      callback(result.data);
-    }
+    return result.data;
   }
 
   /**
@@ -102,5 +132,90 @@ export class ConfigLoader {
    */
   public onChange(callback: ChangeCallback): void {
     this.callbacks.push(callback);
+  }
+
+  /**
+   * Watch the config file and hot-reload successful changes.
+   * @param options - Optional callbacks and watcher factory for hot-reload behavior
+   * @returns Nothing
+   */
+  public watch(options: WatchOptions = {}): void {
+    if (this.watcher) {
+      return;
+    }
+
+    const watcherFactory = options.watcherFactory ?? chokidarWatch;
+    this.watcher = watcherFactory(this.configPath);
+    this.watcher.on('change', async () => {
+      await this.reloadFromWatcher(options.onChannelRemoved);
+    });
+  }
+
+  /**
+   * Stop watching the config file.
+   * @returns Nothing
+   */
+  public async close(): Promise<void> {
+    if (!this.watcher) {
+      return;
+    }
+
+    await this.watcher.close();
+    this.watcher = null;
+  }
+
+  private async reloadFromWatcher(onChannelRemoved?: ChannelRemovedCallback): Promise<void> {
+    const previousConfig = this.config;
+    let nextConfig: ValidatedConfig;
+
+    try {
+      nextConfig = this.readConfig();
+    } catch (err) {
+      const context = err instanceof BotError ? err.context : { error: String(err) };
+      logger.warn('Config hot-reload rejected', {
+        code: ErrorCode.CONFIG_INVALID,
+        path: this.configPath,
+        ...context,
+      });
+      return;
+    }
+
+    this.config = nextConfig;
+    logger.info('Config hot-reloaded successfully', { servers: nextConfig.servers.length });
+
+    if (previousConfig && onChannelRemoved) {
+      await this.notifyRemovedChannels(previousConfig, nextConfig, onChannelRemoved);
+    }
+
+    for (const callback of this.callbacks) {
+      callback(nextConfig);
+    }
+  }
+
+  private async notifyRemovedChannels(
+    previousConfig: ValidatedConfig,
+    nextConfig: ValidatedConfig,
+    onChannelRemoved: ChannelRemovedCallback,
+  ): Promise<void> {
+    for (const server of previousConfig.servers) {
+      for (const channel of server.channels) {
+        const stillConfigured = nextConfig.servers.some(
+          (nextServer) => nextServer.serverId === server.serverId
+            && nextServer.channels.some((nextChannel) => nextChannel.channelId === channel.channelId),
+        );
+
+        if (!stillConfigured) {
+          try {
+            await onChannelRemoved(server.serverId, channel.channelId, channel);
+          } catch (err) {
+            logger.warn('Removed-channel cleanup failed during config hot-reload', {
+              guildId: server.serverId,
+              channelId: channel.channelId,
+              error: String(err),
+            });
+          }
+        }
+      }
+    }
   }
 }

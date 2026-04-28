@@ -87,6 +87,33 @@ export interface TableEventDelegate {
   handleTable(threadId: string, markdown: string): Promise<void>;
 }
 
+/** Delegate for auto-connecting newly created OpenCode sessions. */
+export interface AutoConnectDelegate {
+  /**
+   * Check whether a session is already attached to a Discord thread.
+   * @param sessionId - OpenCode session ID.
+   * @returns True when the session already has a thread mapping.
+   */
+  isSessionAttached(sessionId: string): boolean;
+
+  /**
+   * Handle a newly created OpenCode session for a project.
+   * @param projectPath - OpenCode project directory.
+   * @param session - Session payload from the OpenCode event.
+   * @param client - OpenCode client associated with the stream.
+   * @returns Completion once the session is connected or ignored by the delegate.
+   */
+  handleSessionCreated(projectPath: string, session: unknown, client: OpenCodeStreamClient): Promise<void>;
+
+  /**
+   * Recover sessions that may have been missed while SSE was disconnected.
+   * @param projectPath - OpenCode project directory.
+   * @param client - OpenCode client associated with the stream.
+   * @returns Completion once missed sessions are checked.
+   */
+  recoverMissedSessions?(projectPath: string, client: OpenCodeStreamClient): Promise<void>;
+}
+
 /** Options for constructing a stream handler. */
 export interface StreamHandlerOptions {
   /**
@@ -97,6 +124,7 @@ export interface StreamHandlerOptions {
   getThread(threadId: string): StreamThread | undefined;
   questionHandler: QuestionEventDelegate;
   permissionHandler: PermissionEventDelegate;
+  autoConnectHandler?: AutoConnectDelegate;
   tableHandler?: TableEventDelegate;
   editThrottleMs?: number;
   retryDelayMs?: number;
@@ -191,6 +219,24 @@ export class StreamHandler {
     this.subscriptions.delete(threadId);
   }
 
+  /**
+   * Recover sessions that may have been missed outside the live SSE stream.
+   * @param projectPath - OpenCode project directory to recover.
+   * @param client - OpenCode client associated with the project.
+   * @returns Completion once recovery is delegated or skipped.
+   */
+  async recoverMissedSessions(projectPath: string, client: OpenCodeStreamClient): Promise<void> {
+    if (!this.options.autoConnectHandler?.recoverMissedSessions) {
+      return;
+    }
+
+    try {
+      await this.options.autoConnectHandler.recoverMissedSessions(projectPath, client);
+    } catch (error) {
+      logger.warn('Failed to recover missed auto-connect sessions', { projectPath, error });
+    }
+  }
+
   private async pump(
     threadId: string,
     sessionId: string,
@@ -222,6 +268,7 @@ export class StreamHandler {
           return;
         }
         await this.delay(this.retryDelayMs);
+        await this.recoverMissedSessionsAfterReconnect(context);
       }
     }
   }
@@ -255,6 +302,11 @@ export class StreamHandler {
   private async handleEvent(context: ReturnType<StreamHandler['createContext']>, event: GlobalEventLike): Promise<void> {
     const { payload } = event;
     if (context.projectPath && event.directory && event.directory !== context.projectPath) {
+      return;
+    }
+
+    if (payload.type === 'session.created') {
+      await this.handleSessionCreated(context, event);
       return;
     }
 
@@ -384,6 +436,30 @@ export class StreamHandler {
     }
   }
 
+  private async handleSessionCreated(context: ReturnType<StreamHandler['createContext']>, event: GlobalEventLike): Promise<void> {
+    try {
+      const autoConnectHandler = this.options.autoConnectHandler;
+      const projectPath = event.directory ?? context.projectPath;
+      const session = event.payload.info;
+      const createdSessionId = getCreatedSessionId(session);
+      if (!autoConnectHandler || !projectPath || !createdSessionId || autoConnectHandler.isSessionAttached(createdSessionId)) {
+        return;
+      }
+
+      await autoConnectHandler.handleSessionCreated(projectPath, session, context.client);
+    } catch (error) {
+      logger.warn('Failed to auto-connect created session', { projectPath: event.directory ?? context.projectPath, error });
+    }
+  }
+
+  private async recoverMissedSessionsAfterReconnect(context: ReturnType<StreamHandler['createContext']>): Promise<void> {
+    if (!context.projectPath) {
+      return;
+    }
+
+    await this.recoverMissedSessions(context.projectPath, context.client);
+  }
+
   private async safeSend(thread: StreamThread, content: string, threadId: string, sessionId: string): Promise<void> {
     try {
       await thread.send(content);
@@ -413,6 +489,22 @@ function getSessionId(payload: GlobalEventLike['payload']): string | undefined {
 
   if (isRecord(payload.request) && typeof payload.request.sessionID === 'string') {
     return payload.request.sessionID;
+  }
+
+  return undefined;
+}
+
+function getCreatedSessionId(session: unknown): string | undefined {
+  if (!isRecord(session)) {
+    return undefined;
+  }
+
+  if (typeof session.id === 'string') {
+    return session.id;
+  }
+
+  if (typeof session.sessionID === 'string') {
+    return session.sessionID;
   }
 
   return undefined;

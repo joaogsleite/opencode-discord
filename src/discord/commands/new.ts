@@ -49,7 +49,7 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
 
     const channel = requireThreadCreatableChannel(interaction);
     await interaction.deferReply({ ephemeral: true });
-    const client = await deps.serverManager.ensureRunning(channelConfig.projectPath) as OpencodeSessionClient;
+    const client = requireOpencodeClient(await deps.serverManager.ensureRunning(channelConfig.projectPath), channelConfig.projectPath);
     const thread = await channel.threads.create({ name: title, autoArchiveDuration: 1440, reason: 'OpenCode session' });
 
     await deps.sessionBridge.createSession({
@@ -66,6 +66,14 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
     await deps.sessionBridge.sendPrompt(thread.id, { client, content: prompt, agent, model: null });
     await interaction.editReply({ content: `Created OpenCode session in thread ${thread.id}.` });
   };
+}
+
+function requireOpencodeClient(client: unknown, projectPath: string): OpencodeSessionClient {
+  if (!client) {
+    throw new BotError(ErrorCode.SERVER_START_FAILED, 'OpenCode server is unavailable for this project.', { projectPath });
+  }
+
+  return client as OpencodeSessionClient;
 }
 
 function requireChannelConfig(context: InteractionContext): ChannelConfig {
