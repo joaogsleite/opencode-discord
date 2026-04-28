@@ -137,6 +137,43 @@ describe('ServerManager', () => {
     expect(healthCheck).toHaveBeenCalledTimes(2);
   });
 
+  it('accepts the default SDK v2 health response shape', async () => {
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => process,
+      allocatePort: async () => 4321,
+      createClient: () => client,
+      startupPollMs: 1,
+    });
+
+    const result = await manager.ensureRunning(projectPath);
+
+    expect(result).toBe(client);
+    expect(client.global.health).toHaveBeenCalled();
+  });
+
+  it('shares an in-flight cold start for concurrent ensureRunning calls', async () => {
+    let resolvePort: (port: number) => void = () => undefined;
+    const portPromise = new Promise<number>((resolve) => {
+      resolvePort = resolve;
+    });
+    const spawnProcess = vi.fn(() => process);
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess,
+      allocatePort: () => portPromise,
+      createClient: () => client,
+      healthCheck: async () => true,
+    });
+
+    const first = manager.ensureRunning(projectPath);
+    const second = manager.ensureRunning(projectPath);
+    resolvePort(4321);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([client, client]);
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects startup and does not track a client when the process emits error', async () => {
     const manager = new ServerManager({
       stateManager,
@@ -314,6 +351,35 @@ describe('ServerManager', () => {
 
     expect(secondResolved).toBe(true);
     expect(process.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('starts a fresh server when ensureRunning is called during shutdown', async () => {
+    vi.useFakeTimers();
+    const freshProcess = new MockProcess(5678);
+    const freshClient = createClient('client-2');
+    const processes = [process, freshProcess];
+    const clients = [client, freshClient];
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => processes.shift()!,
+      allocatePort: vi.fn()
+        .mockResolvedValueOnce(4321)
+        .mockResolvedValueOnce(4322),
+      createClient: () => clients.shift()!,
+      healthCheck: async () => true,
+      shutdownTimeoutMs: 50,
+      now: () => 1000,
+    });
+    await manager.ensureRunning(projectPath);
+
+    const shutdown = manager.shutdown(projectPath);
+    const restarted = manager.ensureRunning(projectPath);
+    await vi.advanceTimersByTimeAsync(50);
+
+    await shutdown;
+    await expect(restarted).resolves.toBe(freshClient);
+    expect(process.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(manager.getClient(projectPath)).toBe(freshClient);
   });
 
   it('shuts down all tracked servers', async () => {

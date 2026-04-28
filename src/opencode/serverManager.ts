@@ -90,8 +90,20 @@ function spawnServer(projectPath: string, port: number): ChildProcessLike {
   });
 }
 
-function isHealthy(result: HealthResult): boolean {
-  return 'data' in result && result.data?.healthy === true;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isHealthy(result: HealthResult | unknown): boolean {
+  if (!isRecord(result)) {
+    return false;
+  }
+
+  if (result.healthy === true) {
+    return true;
+  }
+
+  return isRecord(result.data) && result.data.healthy === true;
 }
 
 async function defaultHealthCheck(client: OpencodeClient): Promise<boolean> {
@@ -122,6 +134,7 @@ export class ServerManager {
   private readonly startupPollMs: number;
   private readonly startupTimeoutMs: number;
   private readonly servers = new Map<string, ManagedServer>();
+  private readonly startups = new Map<string, Promise<OpencodeClient>>();
 
   /**
    * Create a manager for opencode serve processes.
@@ -150,10 +163,33 @@ export class ServerManager {
   public async ensureRunning(projectPath: string): Promise<OpencodeClient> {
     const existing = this.servers.get(projectPath);
     if (existing !== undefined) {
+      if (existing.shutdownPromise !== undefined || existing.stopping === true) {
+        await this.shutdown(projectPath);
+        return await this.ensureRunning(projectPath);
+      }
+
       this.cancelIdleTimer(existing);
       return existing.client;
     }
 
+    const startup = this.startups.get(projectPath);
+    if (startup !== undefined) {
+      return await startup;
+    }
+
+    const nextStartup = this.startServer(projectPath);
+    this.startups.set(projectPath, nextStartup);
+
+    try {
+      return await nextStartup;
+    } finally {
+      if (this.startups.get(projectPath) === nextStartup) {
+        this.startups.delete(projectPath);
+      }
+    }
+  }
+
+  private async startServer(projectPath: string): Promise<OpencodeClient> {
     const port = await this.allocatePort();
     const url = `http://127.0.0.1:${port}`;
     const serverProcess = this.spawnProcess(projectPath, port);
