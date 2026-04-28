@@ -11,9 +11,20 @@ import type {
 
 interface SentPayload {
   embeds?: { title?: string; description?: string }[];
-  components?: { components?: { customId?: string; label?: string; style?: number; type?: number }[]; type?: number }[];
+  components?: { components?: { custom_id?: string; label?: string; style?: number; type?: number }[]; type?: number }[];
   content?: string;
 }
+
+const permissionButtons = [
+  {
+    type: 1,
+    components: [
+      { type: 2, custom_id: 'allow_once', label: 'Allow Once', style: 1 },
+      { type: 2, custom_id: 'allow_always', label: 'Always', style: 3 },
+      { type: 2, custom_id: 'reject', label: 'Reject', style: 4 },
+    ],
+  },
+];
 
 type TestInteraction = PermissionInteraction & {
   update: (payload: { embeds?: unknown[]; components?: unknown[]; content?: string }) => Promise<unknown>;
@@ -126,16 +137,7 @@ describe('PermissionHandler', () => {
     expect(sends[0]?.embeds?.[0]?.title).toBe('Permission Request');
     expect(sends[0]?.embeds?.[0]?.description).toContain('edit');
     expect(sends[0]?.embeds?.[0]?.description).toContain('src/**/*.ts');
-    expect(sends[0]?.components).toEqual([
-      {
-        type: 1,
-        components: [
-          { type: 2, customId: 'allow_once', label: 'Allow Once', style: 1 },
-          { type: 2, customId: 'allow_always', label: 'Always', style: 3 },
-          { type: 2, customId: 'reject', label: 'Reject', style: 4 },
-        ],
-      },
-    ]);
+    expect(sends[0]?.components).toEqual(permissionButtons);
   });
 
   it.each([
@@ -189,7 +191,7 @@ describe('PermissionHandler', () => {
     );
     const interaction = await collector.emitCollect('allow_once');
 
-    expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+    expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: permissionButtons });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain('Permission interaction handling failed');
   });
@@ -207,7 +209,7 @@ describe('PermissionHandler', () => {
       client,
     );
     const failedInteraction = await collector.emitCollect('allow_once');
-    expect(failedInteraction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+    expect(failedInteraction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: permissionButtons });
 
     const retryInteraction = await collector.emitCollect('reject');
 
@@ -331,7 +333,7 @@ describe('PermissionHandler', () => {
     );
     const interaction = await collector.emitCollect('allow_once');
 
-    expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+    expect(interaction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: permissionButtons });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain('Permission interaction handling failed');
   });
@@ -387,7 +389,7 @@ describe('PermissionHandler', () => {
       client,
     );
     const failedInteraction = await collector.emitCollect('allow_once');
-    expect(failedInteraction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: [] });
+    expect(failedInteraction.update).toHaveBeenCalledWith({ content: 'Permission response failed. Please try again.', components: permissionButtons });
 
     await collector.emitEnd('time');
 

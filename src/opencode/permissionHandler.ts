@@ -128,7 +128,7 @@ interface PermissionEmbed {
 
 interface PermissionButton {
   type: 2;
-  customId: string;
+  custom_id: string;
   label: string;
   style: 1 | 3 | 4;
 }
@@ -207,7 +207,7 @@ export class PermissionHandler {
           });
           return;
         }
-        void interaction.update?.({ content: 'Permission response failed. Please try again.', components: [] }).catch((updateError: unknown) => {
+        void interaction.update?.({ content: 'Permission response failed. Please try again.', components: [this.createActionRow()] }).catch((updateError: unknown) => {
           logger.warn('Permission interaction failure notice failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error: updateError });
         });
       });
@@ -300,9 +300,9 @@ export class PermissionHandler {
     return {
       type: 1,
       components: [
-        { type: 2, customId: 'allow_once', label: 'Allow Once', style: 1 },
-        { type: 2, customId: 'allow_always', label: 'Always', style: 3 },
-        { type: 2, customId: 'reject', label: 'Reject', style: 4 },
+        { type: 2, custom_id: 'allow_once', label: 'Allow Once', style: 1 },
+        { type: 2, custom_id: 'allow_always', label: 'Always', style: 3 },
+        { type: 2, custom_id: 'reject', label: 'Reject', style: 4 },
       ],
     };
   }
