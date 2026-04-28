@@ -28,6 +28,25 @@ function neverEndingStream(): AsyncIterable<GlobalEventLike> {
   };
 }
 
+function controlledStream(): { events: GlobalEventLike[]; iterable: AsyncIterable<GlobalEventLike>; release: () => void } {
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const events: GlobalEventLike[] = [];
+
+  return {
+    events,
+    release,
+    iterable: {
+      async *[Symbol.asyncIterator]() {
+        await released;
+        yield* events;
+      },
+    },
+  };
+}
+
 function textDelta(delta: string, partID = 'part-1', sessionID = 'session-1'): GlobalEventLike {
   return {
     directory: '/repo',
@@ -122,6 +141,25 @@ describe('StreamHandler', () => {
     handler.unsubscribe('thread-1');
 
     expect(result).not.toBe('blocked');
+  });
+
+  it('cancels the previous pump when subscribing a thread again', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const firstStream = controlledStream();
+    const secondStream = controlledStream();
+    const firstClient = createClient([firstStream.iterable]);
+    const secondClient = createClient([secondStream.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', firstClient);
+    await handler.subscribe('thread-1', 'session-1', secondClient);
+    firstStream.events.push(textDelta('old'));
+    secondStream.events.push(textDelta('new'));
+    firstStream.release();
+    secondStream.release();
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['new']);
   });
 
   it('tracks streamed message IDs in the provided dedupe set', async () => {
@@ -235,6 +273,42 @@ describe('StreamHandler', () => {
 
     expect(questionHandler.handleQuestionEvent).toHaveBeenCalledWith('thread-1', expect.objectContaining({ type: 'question.asked' }), client);
     expect(permissionHandler.handlePermissionEvent).toHaveBeenCalledWith('thread-1', expect.objectContaining({ type: 'permission.asked' }), client);
+  });
+
+  it('delegates nested question and permission request session IDs', async () => {
+    const { thread } = createThread();
+    const questionHandler = { handleQuestionEvent: vi.fn(async () => undefined) };
+    const permissionHandler = { handlePermissionEvent: vi.fn(async () => undefined) };
+    const handler = createHandler({ questionHandler, permissionHandler }, thread);
+    const client = createClient([
+      stream([
+        { directory: '/repo', payload: { type: 'question.asked', request: { id: 'q1', sessionID: 'session-1' } } },
+        { directory: '/repo', payload: { type: 'permission.asked', request: { id: 'p1', sessionID: 'session-1' } } },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(questionHandler.handleQuestionEvent).toHaveBeenCalledWith('thread-1', expect.objectContaining({ type: 'question.asked' }), client);
+    expect(permissionHandler.handlePermissionEvent).toHaveBeenCalledWith('thread-1', expect.objectContaining({ type: 'permission.asked' }), client);
+  });
+
+  it('continues streaming when table handling fails', async () => {
+    const { thread, sends } = createThread();
+    const tableHandler = { handleTable: vi.fn(async () => {
+      throw new Error('render failed');
+    }) };
+    const handler = createHandler({ tableHandler }, thread);
+    const table = '| Name | Value |\n| --- | --- |\n| A | 1 |';
+    const client = createClient([stream([textDelta(table)])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(client.global.event).toHaveBeenCalledTimes(1);
+    expect(tableHandler.handleTable).toHaveBeenCalledWith('thread-1', table);
+    expect(sends).toEqual([table]);
   });
 
   it('throttles message edits to the configured interval', async () => {

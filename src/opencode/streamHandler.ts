@@ -154,6 +154,11 @@ export class StreamHandler {
       return;
     }
 
+    const previous = this.subscriptions.get(threadId);
+    if (previous !== undefined) {
+      previous.cancelled = true;
+    }
+
     const state: SubscriptionState = {
       cancelled: false,
       pumpPromise: Promise.resolve(),
@@ -254,7 +259,7 @@ export class StreamHandler {
     }
 
     if (isSessionScopedEvent(payload.type)) {
-      if (payload.sessionID !== context.sessionId) {
+      if (getSessionId(payload) !== context.sessionId) {
         return;
       }
       if (payload.messageID) {
@@ -296,7 +301,7 @@ export class StreamHandler {
 
     if (!context.tableDetected && detectTable(context.aggregate)) {
       context.tableDetected = true;
-      await this.options.tableHandler?.handleTable(context.threadId, context.aggregate);
+      await this.handleTable(context);
     }
 
     await this.render(context);
@@ -371,6 +376,14 @@ export class StreamHandler {
     }
   }
 
+  private async handleTable(context: ReturnType<StreamHandler['createContext']>): Promise<void> {
+    try {
+      await this.options.tableHandler?.handleTable(context.threadId, context.aggregate);
+    } catch (error) {
+      logger.warn('Failed to render detected table', { threadId: context.threadId, sessionId: context.sessionId, error });
+    }
+  }
+
   private async safeSend(thread: StreamThread, content: string, threadId: string, sessionId: string): Promise<void> {
     try {
       await thread.send(content);
@@ -391,6 +404,18 @@ export class StreamHandler {
 
 function isSessionScopedEvent(type: string): boolean {
   return type === 'message.part.delta' || type === 'message.part.updated' || type === 'question.asked' || type === 'permission.asked';
+}
+
+function getSessionId(payload: GlobalEventLike['payload']): string | undefined {
+  if (payload.sessionID !== undefined) {
+    return payload.sessionID;
+  }
+
+  if (isRecord(payload.request) && typeof payload.request.sessionID === 'string') {
+    return payload.request.sessionID;
+  }
+
+  return undefined;
 }
 
 function getToolStatus(part: Record<string, unknown>): string | undefined {
