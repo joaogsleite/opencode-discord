@@ -324,4 +324,26 @@ describe('QuestionHandler', () => {
     expect(thread.send).not.toHaveBeenCalled();
     expect(handler.hasPendingQuestion('thread-1')).toBe(false);
   });
+
+  it('rejects falsy malformed question entries before posting', async () => {
+    const { thread } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient();
+
+    await expect(
+      handler.handleQuestionEvent(
+        'thread-1',
+        {
+          id: 'request-1',
+          sessionID: 'session-1',
+          questions: [null],
+        },
+        client,
+      ),
+    ).rejects.toMatchObject({ code: ErrorCode.QUESTION_INVALID_ANSWER });
+
+    expect(client.question.reject).toHaveBeenCalledWith({ requestID: 'request-1' });
+    expect(thread.send).not.toHaveBeenCalled();
+    expect(handler.hasPendingQuestion('thread-1')).toBe(false);
+  });
 });

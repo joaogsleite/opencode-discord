@@ -238,7 +238,11 @@ export class PermissionHandler {
       return await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
     } catch (error) {
       logger.warn('Permission prompt posting failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error });
-      this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_DENIED);
+      try {
+        this.assertNoSdkError(await client.permission.reply({ requestID: request.id, reply: 'reject' }), ErrorCode.PERMISSION_DENIED);
+      } catch (rejectError) {
+        logger.warn('Permission prompt fallback reject failed', { code: ErrorCode.PERMISSION_DENIED, requestID: request.id, error: rejectError });
+      }
       return undefined;
     }
   }

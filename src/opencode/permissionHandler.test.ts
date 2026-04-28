@@ -160,6 +160,32 @@ describe('PermissionHandler', () => {
     expect(client.permission.reply).toHaveBeenCalledWith({ requestID: 'request-1', reply: 'reject' });
   });
 
+  it('contains fallback reject failures after interactive prompt posting fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const thread: PermissionThread = {
+      send: vi.fn(async () => {
+        throw new Error('missing permissions');
+      }),
+    };
+    const handler = createHandler({}, thread);
+    const client = createClient();
+    vi.mocked(client.permission.reply).mockRejectedValueOnce(new Error('network down'));
+
+    await expect(
+      handler.handlePermissionEvent(
+        'thread-1',
+        { id: 'request-1', sessionID: 'session-1', permission: 'bash', patterns: ['pnpm test'] },
+        client,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(client.permission.reply).toHaveBeenCalledWith({ requestID: 'request-1', reply: 'reject' });
+    expect(warn.mock.calls.map((call) => call[0])).toEqual(expect.arrayContaining([
+      expect.stringContaining('Permission prompt posting failed'),
+      expect.stringContaining('Permission prompt fallback reject failed'),
+    ]));
+  });
+
   it.each([
     ['allow_once', 'once'],
     ['allow_always', 'always'],

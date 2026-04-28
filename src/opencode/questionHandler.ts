@@ -239,8 +239,7 @@ export class QuestionHandler {
   }
 
   private getValidationError(request: QuestionRequest): BotError | undefined {
-    const malformedQuestion = request.questions.find((question) => !this.isQuestionInfo(question));
-    if (malformedQuestion) {
+    if (request.questions.some((question) => !this.isQuestionInfo(question))) {
       return new BotError(ErrorCode.QUESTION_INVALID_ANSWER, 'Invalid question entry', { requestID: request.id });
     }
 
