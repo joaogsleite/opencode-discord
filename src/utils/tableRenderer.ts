@@ -1,6 +1,7 @@
 import { Resvg } from '@resvg/resvg-js';
 import * as fs from 'node:fs';
 import satori, { type Font } from 'satori';
+import { BotError, ErrorCode } from './errors.js';
 
 const backgroundColor = '#2b2d31';
 const textColor = '#e0e0e0';
@@ -56,7 +57,7 @@ function parseMarkdownTable(markdownTable: string): TableData {
   const separatorLine = lines[1];
 
   if (headerLine === undefined || separatorLine === undefined || !isSeparatorRow(separatorLine)) {
-    throw new Error('Invalid markdown table');
+    throw new BotError(ErrorCode.TABLE_RENDER_FAILED, 'Invalid markdown table');
   }
 
   const headers = splitMarkdownRow(headerLine);
@@ -182,7 +183,7 @@ function loadFont(): Font {
   const fontPath = fontPaths.find((candidate) => fs.existsSync(candidate));
 
   if (fontPath === undefined) {
-    throw new Error('No supported system font found for table rendering');
+    throw new BotError(ErrorCode.TABLE_RENDER_FAILED, 'No supported system font found for table rendering');
   }
 
   return {

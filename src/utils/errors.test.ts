@@ -49,6 +49,7 @@ describe('ErrorCode', () => {
       'FORK_FAILED',
       'QUESTION_INVALID_ANSWER', 'QUESTION_TIMEOUT',
       'PERMISSION_TIMEOUT',
+      'TABLE_RENDER_FAILED',
     ];
     for (const code of requiredCodes) {
       expect(ErrorCode[code as keyof typeof ErrorCode]).toBe(code);

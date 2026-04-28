@@ -25,6 +25,7 @@ export const ErrorCode = {
   QUESTION_INVALID_ANSWER: 'QUESTION_INVALID_ANSWER',
   QUESTION_TIMEOUT: 'QUESTION_TIMEOUT',
   PERMISSION_TIMEOUT: 'PERMISSION_TIMEOUT',
+  TABLE_RENDER_FAILED: 'TABLE_RENDER_FAILED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
