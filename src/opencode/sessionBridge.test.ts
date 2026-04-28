@@ -110,8 +110,7 @@ describe('SessionBridge', () => {
         { type: 'file', mime: 'text/plain', url: 'https://cdn.example/file.txt', filename: 'file.txt' },
       ],
       agent: 'build',
-      providerID: 'anthropic',
-      modelID: 'claude',
+      model: { providerID: 'anthropic', modelID: 'claude' },
     });
     expect(stateManager.setSession).toHaveBeenCalledWith('thread-1', {
       sessionId: 'session-1',
@@ -134,13 +133,13 @@ describe('SessionBridge', () => {
         .fn()
         .mockResolvedValueOnce({
           data: [
-            { id: 'msg-2', role: 'assistant', content: 'done' },
-            { id: 'msg-1', role: 'user', content: 'hello' },
+            { info: { id: 'msg-2', role: 'assistant' }, parts: [{ type: 'text', text: 'done' }] },
+            { info: { id: 'msg-1', role: 'user' }, parts: [{ type: 'text', text: 'hello' }] },
           ],
         })
         .mockResolvedValueOnce([
-          { id: 'msg-1', role: 'user', content: 'hello' },
-          { id: 'msg-3', role: 'assistant', content: 'new answer' },
+          { info: { id: 'msg-1', role: 'user' }, parts: [{ type: 'text', text: 'hello' }] },
+          { info: { id: 'msg-3', role: 'assistant' }, parts: [{ type: 'text', text: 'new answer' }] },
         ]),
     });
     const thread = { send: vi.fn(async () => undefined) };
@@ -225,6 +224,52 @@ describe('SessionBridge', () => {
     await bridge.abortSession('thread-1', client);
 
     expect(client.session.abort).toHaveBeenCalledWith({ sessionID: 'session-1' });
+  });
+
+  it('throws and preserves activity time when promptAsync returns an SDK error envelope', async () => {
+    const { bridge, stateManager } = createBridge(2000);
+    const client = createClient({ promptAsync: vi.fn(async () => ({ error: { name: 'NotFoundError' } })) });
+    const session: SessionState = {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    };
+    stateManager.sessions.set('thread-1', session);
+
+    await expect(bridge.sendPrompt('thread-1', { client, content: 'hello' })).rejects.toMatchObject({
+      code: ErrorCode.SESSION_NOT_FOUND,
+    });
+
+    expect(stateManager.setSession).not.toHaveBeenCalled();
+    expect(stateManager.sessions.get('thread-1')).toEqual(session);
+  });
+
+  it('throws when abort returns an SDK error envelope', async () => {
+    const { bridge, stateManager } = createBridge();
+    const client = createClient({ abort: vi.fn(async () => ({ error: { name: 'AbortFailed' } })) });
+    stateManager.sessions.set('thread-1', {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    });
+
+    await expect(bridge.abortSession('thread-1', client)).rejects.toMatchObject({
+      code: ErrorCode.SESSION_NOT_FOUND,
+    });
   });
 
   it('throws SESSION_NOT_FOUND when sending to an absent session', async () => {

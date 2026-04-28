@@ -5,13 +5,15 @@ import { formatHistoryMessage } from '../utils/formatter.js';
 
 type MaybeWrapped<T> = T | { data: T };
 type SessionLike = { id?: string; sessionID?: string } | null | undefined;
+type SdkErrorEnvelope = { error?: unknown };
 type MessageLike = {
   id?: string;
   messageID?: string;
   role?: string;
   content?: string;
   text?: string;
-  parts?: Array<{ text?: string; content?: string }>;
+  info?: { id?: string; messageID?: string; role?: string };
+  parts?: Array<{ type?: string; text?: string; content?: string }>;
 };
 
 /** Structural subset of StateManager used by the session bridge. */
@@ -31,8 +33,7 @@ export interface OpencodeSessionClient {
       sessionID: string;
       parts: Array<TextPartInput | FilePartInput>;
       agent: string;
-      modelID?: string;
-      providerID?: string;
+      model?: { providerID?: string; modelID: string };
     }): Promise<unknown>;
   };
 }
@@ -146,12 +147,13 @@ export class SessionBridge {
     ];
     const model = parseModel(options.model ?? session.model);
 
-    await options.client.session.promptAsync({
+    const result = await options.client.session.promptAsync({
       sessionID: session.sessionId,
       parts,
       agent: options.agent ?? session.agent,
       ...model,
     });
+    assertNoSdkError(result, 'OpenCode prompt failed', { threadId, sessionId: session.sessionId });
 
     this.stateManager.setSession(threadId, { ...session, lastActivityAt: this.now() });
   }
@@ -195,7 +197,8 @@ export class SessionBridge {
    */
   public async abortSession(threadId: string, client: OpencodeSessionClient): Promise<void> {
     const session = this.requireActiveSession(threadId);
-    await client.session.abort({ sessionID: session.sessionId });
+    const result = await client.session.abort({ sessionID: session.sessionId });
+    assertNoSdkError(result, 'OpenCode abort failed', { threadId, sessionId: session.sessionId });
   }
 
   private buildSessionState(options: CreateSessionOptions | ConnectToSessionOptions, sessionId: string): SessionState {
@@ -249,14 +252,14 @@ export class SessionBridge {
     const messages = unwrap(await client.session.messages(options));
 
     for (const message of [...messages].reverse()) {
-      const messageId = message.id ?? message.messageID;
+      const messageId = getMessageId(message);
       if (messageId && dedupeSet.has(messageId)) {
         continue;
       }
 
       const content = getMessageContent(message);
       if (content) {
-        await thread.send(formatHistoryMessage(message.role ?? 'assistant', content));
+        await thread.send(formatHistoryMessage(getMessageRole(message), content));
       }
 
       if (messageId) {
@@ -278,20 +281,30 @@ function getSessionId(session: SessionLike): string | undefined {
   return session?.id ?? session?.sessionID;
 }
 
-function parseModel(model: string | null | undefined): { providerID?: string; modelID?: string } {
+function parseModel(model: string | null | undefined): { model?: { providerID?: string; modelID: string } } {
   if (!model) {
     return {};
   }
 
   const separatorIndex = model.indexOf('/');
   if (separatorIndex === -1) {
-    return { modelID: model };
+    return { model: { modelID: model } };
   }
 
   return {
-    providerID: model.slice(0, separatorIndex),
-    modelID: model.slice(separatorIndex + 1),
+    model: {
+      providerID: model.slice(0, separatorIndex),
+      modelID: model.slice(separatorIndex + 1),
+    },
   };
+}
+
+function getMessageId(message: MessageLike): string | undefined {
+  return message.info?.id ?? message.info?.messageID ?? message.id ?? message.messageID;
+}
+
+function getMessageRole(message: MessageLike): string {
+  return message.info?.role ?? message.role ?? 'assistant';
 }
 
 function getMessageContent(message: MessageLike): string {
@@ -304,7 +317,14 @@ function getMessageContent(message: MessageLike): string {
   }
 
   return (message.parts ?? [])
+    .filter((part) => !part.type || part.type === 'text')
     .map((part) => part.text ?? part.content ?? '')
     .filter(Boolean)
     .join('\n');
+}
+
+function assertNoSdkError(result: unknown, message: string, context: Record<string, unknown>): void {
+  if (result && typeof result === 'object' && 'error' in result && (result as SdkErrorEnvelope).error) {
+    throw new BotError(ErrorCode.SESSION_NOT_FOUND, message, { ...context, sdkError: (result as SdkErrorEnvelope).error });
+  }
 }
