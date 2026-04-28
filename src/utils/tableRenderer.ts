@@ -33,18 +33,26 @@ interface SatoriElement {
  * @returns PNG image data for the rendered table.
  */
 export async function renderTableToPng(markdownTable: string): Promise<Buffer> {
-  const table = parseMarkdownTable(markdownTable);
-  const columnWidths = calculateColumnWidths(table);
-  const width = columnWidths.reduce((sum, columnWidth) => sum + columnWidth, 0) + 2;
-  const height = rowHeight * (table.rows.length + 1) + 2;
-  const svg = await satori(buildTableElement(table, columnWidths), {
-    width,
-    height,
-    fonts: [loadFont()],
-  });
-  const png = new Resvg(svg).render().asPng();
+  try {
+    const table = parseMarkdownTable(markdownTable);
+    const columnWidths = calculateColumnWidths(table);
+    const width = columnWidths.reduce((sum, columnWidth) => sum + columnWidth, 0) + 2;
+    const height = rowHeight * (table.rows.length + 1) + 2;
+    const svg = await satori(buildTableElement(table, columnWidths), {
+      width,
+      height,
+      fonts: [loadFont()],
+    });
+    const png = new Resvg(svg).render().asPng();
 
-  return Buffer.from(png);
+    return Buffer.from(png);
+  } catch (error) {
+    if (error instanceof BotError) {
+      throw error;
+    }
+
+    throw new BotError(ErrorCode.TABLE_RENDER_FAILED, 'Failed to render markdown table', { cause: error });
+  }
 }
 
 function parseMarkdownTable(markdownTable: string): TableData {
