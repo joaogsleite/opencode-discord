@@ -43,12 +43,6 @@ cp config.example.yaml config.yaml
 
 Edit `config.yaml` with your Discord token, guild IDs, channel IDs, and local project paths.
 
-Build the project:
-
-```bash
-pnpm build
-```
-
 Run in development:
 
 ```bash
@@ -174,7 +168,6 @@ Thread-level flow:
 | `state.json` | Persisted server, session, and queue state. Ignored by git. |
 | `.cache/` | Cached agents, models, sessions, and MCP status. Ignored by git. |
 | `<project>/.opencode/attachments/` | Downloaded Discord attachments for prompt file parts. |
-| `dist/` | Build output. Ignored by git. |
 
 ## Development
 
