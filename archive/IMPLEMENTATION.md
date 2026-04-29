@@ -6,7 +6,7 @@
 
 **Architecture:** One `opencode serve` per unique project path, Discord threads map 1:1 to OpenCode sessions, SSE streaming with smart message splitting, per-thread message queue for ordering.
 
-**Tech Stack:** Node.js + TypeScript (strict, ES2022), discord.js v14, @opencode-ai/sdk/v2, pnpm, vitest, tsup, Zod, chokidar, satori + @resvg/resvg-js
+**Tech Stack:** Node.js + TypeScript (strict, ES2022), discord.js v14, @opencode-ai/sdk/v2, pnpm, vitest, Zod, chokidar, satori + @resvg/resvg-js
 
 ---
 
@@ -30,7 +30,6 @@
 | Package | Purpose |
 |---------|---------|
 | `typescript` | Type checking (strict mode, ES2022 target) |
-| `tsup` | Build/bundle (ESM output) |
 | `vitest` | Testing framework |
 | `@types/node` | Node.js type definitions |
 

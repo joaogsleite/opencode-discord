@@ -28,6 +28,24 @@ function neverEndingStream(): AsyncIterable<GlobalEventLike> {
   };
 }
 
+function streamThenNever(events: GlobalEventLike[]): { drained: Promise<void>; iterable: AsyncIterable<GlobalEventLike> } {
+  let resolveDrained: () => void = () => undefined;
+  const drained = new Promise<void>((resolve) => {
+    resolveDrained = resolve;
+  });
+
+  return {
+    drained,
+    iterable: {
+      async *[Symbol.asyncIterator]() {
+        yield* events;
+        resolveDrained();
+        await new Promise<never>(() => undefined);
+      },
+    },
+  };
+}
+
 function controlledStream(): { events: GlobalEventLike[]; iterable: AsyncIterable<GlobalEventLike>; release: () => void } {
   let release: () => void = () => undefined;
   const released = new Promise<void>((resolve) => {
@@ -47,10 +65,10 @@ function controlledStream(): { events: GlobalEventLike[]; iterable: AsyncIterabl
   };
 }
 
-function textDelta(delta: string, partID = 'part-1', sessionID = 'session-1'): GlobalEventLike {
+function textDelta(delta: string, partID = 'part-1', sessionID = 'session-1', messageID?: string): GlobalEventLike {
   return {
     directory: '/repo',
-    payload: { type: 'message.part.delta', sessionID, partID, field: 'text', delta },
+    payload: { type: 'message.part.delta', sessionID, messageID, partID, field: 'text', delta },
   };
 }
 
@@ -80,6 +98,16 @@ function createClient(events: AsyncIterable<GlobalEventLike>[]): OpenCodeStreamC
       event: vi.fn(async () => events[index++] ?? stream([])),
     },
   };
+}
+
+function createSseResultClient(events: AsyncIterable<GlobalEventLike>[]): OpenCodeStreamClient {
+  let index = 0;
+
+  return {
+    global: {
+      event: vi.fn(async () => ({ stream: events[index++] ?? stream([]) })),
+    },
+  } as unknown as OpenCodeStreamClient;
 }
 
 function createHandler(options: Partial<StreamHandlerOptions> = {}, thread = createThread().thread): StreamHandler {
@@ -114,6 +142,55 @@ describe('StreamHandler', () => {
 
     expect(sends).toEqual(['Hello']);
     expect(edits.at(-1)).toBe('Hello world');
+  });
+
+  it('starts a separate Discord message for each assistant message ID', async () => {
+    const { thread, edits, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([stream([
+      textDelta('First', 'part-1', 'session-1', 'msg-1'),
+      textDelta(' response', 'part-1', 'session-1', 'msg-1'),
+      textDelta('Second', 'part-2', 'session-1', 'msg-2'),
+      textDelta(' answer', 'part-2', 'session-1', 'msg-2'),
+    ])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['First', 'Second']);
+    expect(edits).toEqual(['First response', 'Second answer']);
+  });
+
+  it('consumes SDK SSE result streams returned by global.event', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createSseResultClient([stream([textDelta('from sdk stream')])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['from sdk stream']);
+  });
+
+  it('streams text deltas from SDK properties payloads', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.delta',
+            properties: { sessionID: 'session-1', messageID: 'msg-1', partID: 'part-1', field: 'text', delta: 'agent response' },
+          } as unknown as GlobalEventLike['payload'],
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['agent response']);
   });
 
   it('filters stream events by project directory when projectPath is provided', async () => {
@@ -333,6 +410,24 @@ describe('StreamHandler', () => {
     await handler.waitForIdle('thread-1');
 
     expect(edits.at(-1)).toBe('ABC');
+  });
+
+  it('flushes throttled content when the session becomes idle on a persistent stream', async () => {
+    const { thread, edits } = createThread();
+    const times = [0, 100, 200];
+    const handler = createHandler({ editThrottleMs: 1000, now: () => times.shift() ?? 200 }, thread);
+    const persistent = streamThenNever([
+      textDelta('A'),
+      textDelta('B'),
+      { directory: '/repo', payload: { type: 'session.idle', sessionID: 'session-1' } },
+    ]);
+    const client = createClient([persistent.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
+    handler.unsubscribe('thread-1');
+
+    expect(edits.at(-1)).toBe('AB');
   });
 
   it('retries when an SSE stream ends cleanly and consumes the next stream', async () => {

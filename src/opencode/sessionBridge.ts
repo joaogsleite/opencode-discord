@@ -104,6 +104,7 @@ export class SessionBridge {
   private readonly stateManager: SessionStateManager;
   private readonly streamSubscriber: StreamSubscriber;
   private readonly now: () => number;
+  private readonly subscribedClients = new Map<string, OpencodeSessionClient>();
 
   /**
    * Create a session bridge.
@@ -130,6 +131,7 @@ export class SessionBridge {
 
     const state = this.buildSessionState(options, sessionId);
     this.stateManager.setSession(options.threadId, state);
+    await this.refreshSubscription(options.threadId, sessionId, options.client);
     return state;
   }
 
@@ -147,6 +149,7 @@ export class SessionBridge {
     ];
     const model = parseModel(options.model ?? session.model);
 
+    await this.refreshSubscription(threadId, session.sessionId, options.client);
     const result = await options.client.session.promptAsync({
       sessionID: session.sessionId,
       parts,
@@ -171,6 +174,7 @@ export class SessionBridge {
 
     const dedupeSet = new Set<string>();
     await this.streamSubscriber.subscribe(options.threadId, options.sessionId, options.client, dedupeSet);
+    this.subscribedClients.set(options.threadId, options.client);
 
     if ((options.historyLimit ?? 0) > 0) {
       try {
@@ -187,6 +191,15 @@ export class SessionBridge {
     }
 
     await options.thread.send(`Connected to session \`${options.sessionId}\`.`);
+  }
+
+  private async refreshSubscription(threadId: string, sessionId: string, client: OpencodeSessionClient): Promise<void> {
+    if (this.subscribedClients.get(threadId) === client) {
+      return;
+    }
+
+    await this.streamSubscriber.subscribe(threadId, sessionId, client);
+    this.subscribedClients.set(threadId, client);
   }
 
   /**

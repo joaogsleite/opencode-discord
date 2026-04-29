@@ -26,6 +26,7 @@ interface ThreadCreatableChannel {
 export interface NewCommandDependencies {
   serverManager: { ensureRunning(projectPath: string): Promise<unknown> };
   sessionBridge: Pick<SessionBridge, 'createSession' | 'sendPrompt'>;
+  rememberThread?: (threadId: string, thread: ThreadLike) => void;
 }
 
 /**
@@ -51,6 +52,7 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
     await interaction.deferReply({ ephemeral: true });
     const client = requireOpencodeClient(await deps.serverManager.ensureRunning(channelConfig.projectPath), channelConfig.projectPath);
     const thread = await channel.threads.create({ name: title, autoArchiveDuration: 1440, reason: 'OpenCode session' });
+    deps.rememberThread?.(thread.id, thread);
 
     await deps.sessionBridge.createSession({
       client,

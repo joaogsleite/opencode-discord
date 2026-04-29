@@ -20,7 +20,7 @@ Typical flow:
 
 | Requirement | Notes |
 | --- | --- |
-| Node.js | Built for modern Node.js with ESM output and `node20` tsup target. |
+| Node.js | Built for modern Node.js. |
 | pnpm | The repo declares `pnpm@10.33.1`. |
 | OpenCode CLI | `opencode` must be available in `PATH`. Startup checks `opencode --version`. |
 | Discord bot token | Create an application and bot in the Discord Developer Portal. |
@@ -183,7 +183,6 @@ Useful scripts:
 | Command | Purpose |
 | --- | --- |
 | `pnpm dev` | Run `src/index.ts` through `tsx`. |
-| `pnpm build` | Build ESM output with `tsup`. |
 | `pnpm test` | Run Vitest once. |
 | `pnpm test:watch` | Run Vitest in watch mode. |
 | `pnpm typecheck` | Run TypeScript without emitting files. |

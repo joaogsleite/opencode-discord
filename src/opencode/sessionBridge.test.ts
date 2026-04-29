@@ -81,6 +81,34 @@ describe('SessionBridge', () => {
     expect(stateManager.setSession).toHaveBeenCalledWith('thread-1', session);
   });
 
+  it('subscribes newly created sessions after persisting the thread mapping', async () => {
+    const { bridge, stateManager, streamSubscriber } = createBridge(1234);
+    const client = createClient({ create: vi.fn(async () => ({ data: { sessionID: 'session-123' } })) });
+    const calls: string[] = [];
+    stateManager.setSession.mockImplementation((threadId: string, session: SessionState) => {
+      calls.push(`set:${threadId}:${session.sessionId}`);
+      stateManager.sessions.set(threadId, session);
+    });
+    vi.mocked(streamSubscriber.subscribe).mockImplementation(async (threadId: string, sessionId: string) => {
+      calls.push(`subscribe:${threadId}:${sessionId}`);
+    });
+
+    await bridge.createSession({
+      client,
+      threadId: 'thread-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      title: 'Task thread',
+    });
+
+    expect(streamSubscriber.subscribe).toHaveBeenCalledWith('thread-1', 'session-123', client);
+    expect(calls).toEqual(['set:thread-1:session-123', 'subscribe:thread-1:session-123']);
+  });
+
   it('builds text and file prompt parts, parses model, and updates activity time', async () => {
     const { bridge, stateManager } = createBridge(2000);
     const client = createClient();
@@ -124,6 +152,28 @@ describe('SessionBridge', () => {
       lastActivityAt: 2000,
       status: 'active',
     });
+  });
+
+  it('refreshes the stream subscription with the active client before sending each prompt', async () => {
+    const { bridge, stateManager, streamSubscriber } = createBridge(2000);
+    const client = createClient();
+    stateManager.sessions.set('thread-1', {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    });
+
+    await bridge.sendPrompt('thread-1', { client, content: 'after restart' });
+
+    expect(streamSubscriber.subscribe).toHaveBeenCalledWith('thread-1', 'session-1', client);
+    expect(streamSubscriber.subscribe).toHaveBeenCalledBefore(client.session.promptAsync as never);
   });
 
   it('connects to an existing session, replays history, subscribes streams, and recovers gaps', async () => {

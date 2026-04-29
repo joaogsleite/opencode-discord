@@ -1,6 +1,64 @@
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { startBot } from './index.js';
+import { isDirectEntrypoint, runCli, startBot } from './index.js';
 import type { BotState, ServerState, SessionState } from './state/types.js';
+import { BotError, ErrorCode } from './utils/errors.js';
+
+describe('CLI entrypoint', () => {
+  it('detects when index.ts is executed directly', () => {
+    const moduleUrl = pathToFileURL('/repo/src/index.ts').href;
+
+    expect(isDirectEntrypoint(moduleUrl, ['/node', '/repo/src/index.ts'])).toBe(true);
+    expect(isDirectEntrypoint(moduleUrl, ['/node', '/repo/src/index.test.ts'])).toBe(false);
+  });
+
+  it('starts the bot through the CLI runner', async () => {
+    const start = vi.fn(async () => undefined);
+    const logger = { error: vi.fn() };
+    const processLike = { exitCode: 0 };
+
+    await runCli({ start, logger, processLike });
+
+    expect(start).toHaveBeenCalledOnce();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(processLike.exitCode).toBe(0);
+  });
+
+  it('logs startup failures and exits non-zero', async () => {
+    const error = new BotError(ErrorCode.CONFIG_INVALID, 'Cannot read config file: config.yaml', { path: 'config.yaml' });
+    const start = vi.fn(async () => {
+      throw error;
+    });
+    const logger = { error: vi.fn() };
+    const processLike = { exitCode: 0 };
+
+    await runCli({ start, logger, processLike });
+
+    expect(logger.error).toHaveBeenCalledWith('Bot startup failed', {
+      code: ErrorCode.CONFIG_INVALID,
+      error: 'Cannot read config file: config.yaml',
+      path: 'config.yaml',
+    });
+    expect(processLike.exitCode).toBe(1);
+  });
+
+  it('keeps the BotError message when context includes an error field', async () => {
+    const error = new BotError(ErrorCode.SERVER_START_FAILED, 'OpenCode CLI was not found in PATH', { error: 'spawn opencode ENOENT' });
+    const start = vi.fn(async () => {
+      throw error;
+    });
+    const logger = { error: vi.fn() };
+    const processLike = { exitCode: 0 };
+
+    await runCli({ start, logger, processLike });
+
+    expect(logger.error).toHaveBeenCalledWith('Bot startup failed', {
+      code: ErrorCode.SERVER_START_FAILED,
+      error: 'OpenCode CLI was not found in PATH',
+    });
+    expect(processLike.exitCode).toBe(1);
+  });
+});
 
 describe('startBot', () => {
   it('watches config reloads, cleans up removed channel sessions, redeploys commands, and closes the watcher', async () => {
@@ -300,6 +358,198 @@ describe('startBot', () => {
     });
 
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+  });
+
+  it('remembers /new threads before subscribing their stream', async () => {
+    const calls: string[] = [];
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const stateManager = {
+      load: vi.fn(),
+      getState: vi.fn(() => state),
+      setServer: vi.fn(),
+      getServer: vi.fn(),
+      removeServer: vi.fn(),
+      getSession: vi.fn((threadId: string) => state.sessions[threadId]),
+      setSession: vi.fn((threadId: string, session: SessionState) => {
+        state.sessions[threadId] = session;
+      }),
+      removeSession: vi.fn(),
+      getQueue: vi.fn(() => []),
+      clearQueue: vi.fn(),
+    };
+    const opencodeClient = {
+      session: {
+        create: vi.fn(async () => ({ id: 'session-new' })),
+        get: vi.fn(),
+        abort: vi.fn(),
+        messages: vi.fn(),
+        promptAsync: vi.fn(async () => undefined),
+      },
+    };
+    const thread = {
+      id: 'thread-new',
+      send: vi.fn(),
+    };
+    const parentChannel = {
+      threads: {
+        create: vi.fn(async () => thread),
+      },
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const createStreamHandler = vi.fn((options: { getThread(threadId: string): unknown }) => ({
+      subscribe: vi.fn(async (threadId: string) => {
+        calls.push(`subscribe:${threadId}:${options.getThread(threadId) === thread ? 'cached' : 'missing'}`);
+      }),
+    }));
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager,
+      serverManager: {
+        ensureRunning: vi.fn(async () => opencodeClient),
+        getClient: vi.fn(),
+        shutdownAll: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      createStreamHandler,
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    await interactionListener?.({
+      id: 'interaction-1',
+      channelId: 'channel-1',
+      channel: parentChannel,
+      guildId: 'guild-1',
+      commandName: 'new',
+      user: { id: 'user-1' },
+      replied: false,
+      deferred: false,
+      isChatInputCommand: () => true,
+      isAutocomplete: () => false,
+      options: {
+        getString: vi.fn((name: string, required?: boolean) => {
+          if (name === 'prompt') {
+            return required ? 'Build feature' : null;
+          }
+          return null;
+        }),
+      },
+      deferReply: vi.fn(async () => undefined),
+      editReply: vi.fn(async () => undefined),
+      reply: vi.fn(),
+      followUp: vi.fn(),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(parentChannel.threads.create).toHaveBeenCalledOnce();
+    expect(calls).toEqual(['subscribe:thread-new:cached']);
+    expect(opencodeClient.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({ sessionID: 'session-new' }));
+  });
+
+  it('remembers existing thread messages before resubscribing their stream', async () => {
+    const calls: string[] = [];
+    const session: SessionState = {
+      sessionId: 'session-old',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/project/one',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 10,
+      lastActivityAt: 20,
+      status: 'active',
+    };
+    const state: BotState = { version: 1, servers: {}, sessions: { 'thread-old': session }, queues: {} };
+    const stateManager = {
+      load: vi.fn(),
+      getState: vi.fn(() => state),
+      setServer: vi.fn(),
+      getServer: vi.fn(),
+      removeServer: vi.fn(),
+      getSession: vi.fn((threadId: string) => state.sessions[threadId]),
+      setSession: vi.fn((threadId: string, nextSession: SessionState) => {
+        state.sessions[threadId] = nextSession;
+      }),
+      removeSession: vi.fn(),
+      getQueue: vi.fn(() => []),
+      clearQueue: vi.fn(),
+      enqueue: vi.fn(),
+    };
+    const opencodeClient = {
+      session: {
+        create: vi.fn(),
+        get: vi.fn(),
+        abort: vi.fn(),
+        messages: vi.fn(),
+        promptAsync: vi.fn(async () => undefined),
+      },
+    };
+    const thread = { id: 'thread-old', isThread: () => true, send: vi.fn() };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const createStreamHandler = vi.fn((options: { getThread(threadId: string): unknown }) => ({
+      subscribe: vi.fn(async (threadId: string) => {
+        calls.push(`subscribe:${threadId}:${options.getThread(threadId) === thread ? 'cached' : 'missing'}`);
+      }),
+    }));
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager,
+      serverManager: {
+        ensureRunning: vi.fn(async () => opencodeClient),
+        getClient: vi.fn(),
+        shutdownAll: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      createStreamHandler,
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+    });
+
+    const messageListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'messageCreate')?.[1] as ((message: unknown) => Promise<void> | void) | undefined;
+    await messageListener?.({
+      id: 'message-1',
+      author: { id: 'user-1', bot: false },
+      channelId: 'thread-old',
+      channel: thread,
+      content: 'continue old session',
+      attachments: new Map(),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toEqual(['subscribe:thread-old:cached']);
+    expect(opencodeClient.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({ sessionID: 'session-old' }));
   });
 
   it('wires real question and permission handlers into the default stream handler', async () => {
@@ -1140,6 +1390,55 @@ describe('startBot', () => {
       stateManager: {
         load: vi.fn(),
         getState: vi.fn(() => ({ version: 1, servers: {}, sessions: { 'thread-known': knownSession }, queues: {} })),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(async () => client),
+        getClient: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      createDiscordClient: vi.fn(() => ({ login: vi.fn() })),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      autoConnectSession,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(client.global.event).toHaveBeenCalledOnce();
+    expect(autoConnectSession).toHaveBeenCalledOnce();
+    expect(autoConnectSession).toHaveBeenCalledWith('/project/eager', newSession, client);
+  });
+
+  it('subscribes to SDK SSE result project event streams', async () => {
+    const newSession = { id: 'new-session', title: 'Created from SDK stream' };
+    async function* events(): AsyncIterable<unknown> {
+      yield { payload: { type: 'session.created', info: newSession } };
+    }
+    const client = {
+      global: { event: vi.fn(async () => ({ stream: events() })) },
+      session: { list: vi.fn(async () => []) },
+    };
+    const autoConnectSession = vi.fn();
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/eager', autoConnect: true }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => ({ version: 1, servers: {}, sessions: {}, queues: {} })),
         setServer: vi.fn(),
         getServer: vi.fn(),
         removeServer: vi.fn(),

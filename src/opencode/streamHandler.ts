@@ -16,15 +16,18 @@ export interface GlobalEventLike {
     part?: Record<string, unknown>;
     info?: unknown;
     request?: unknown;
+    properties?: Record<string, unknown>;
   };
 }
 
 /** OpenCode client subset required for SSE streaming. */
 export interface OpenCodeStreamClient {
   global: {
-    event(): AsyncIterable<GlobalEventLike> | Promise<AsyncIterable<GlobalEventLike>>;
+    event(): OpenCodeEventSource | Promise<OpenCodeEventSource>;
   };
 }
+
+export type OpenCodeEventSource = AsyncIterable<GlobalEventLike> | { stream: AsyncIterable<GlobalEventLike> };
 
 /** Editable Discord message subset required by streaming. */
 export interface StreamMessage {
@@ -61,7 +64,7 @@ export interface QuestionEventDelegate {
    * @param client - OpenCode client for replies.
    * @returns Completion once the event is handled.
    */
-  handleQuestionEvent(threadId: string, event: GlobalEventLike['payload'], client: OpenCodeStreamClient): Promise<void>;
+  handleQuestionEvent(threadId: string, event: unknown, client: OpenCodeStreamClient): Promise<void>;
 }
 
 /** Delegate for OpenCode permission events. */
@@ -73,7 +76,7 @@ export interface PermissionEventDelegate {
    * @param client - OpenCode client for replies.
    * @returns Completion once the event is handled.
    */
-  handlePermissionEvent(threadId: string, event: GlobalEventLike['payload'], client: OpenCodeStreamClient): Promise<void>;
+  handlePermissionEvent(threadId: string, event: unknown, client: OpenCodeStreamClient): Promise<void>;
 }
 
 /** Delegate for detected markdown tables. */
@@ -252,7 +255,7 @@ export class StreamHandler {
     while (!state.cancelled) {
       let receivedEvent = false;
       try {
-        const events = await client.global.event();
+        const events = getEventStream(await client.global.event());
         for await (const event of events) {
           if (state.cancelled) {
             return;
@@ -307,6 +310,7 @@ export class StreamHandler {
       projectPath,
       aggregate: '',
       parts: new Map<string, string>(),
+      currentMessageId: undefined as string | undefined,
       currentMessage: undefined as StreamMessage | undefined,
       sentChunks: 0,
       lastEditAt: Number.NEGATIVE_INFINITY,
@@ -327,32 +331,42 @@ export class StreamHandler {
       return;
     }
 
+    if (payload.type === 'session.idle') {
+      if (getSessionId(payload) === context.sessionId) {
+        await this.render(context, true);
+      }
+      return;
+    }
+
     if (isSessionScopedEvent(payload.type)) {
       if (getSessionId(payload) !== context.sessionId) {
         return;
       }
-      if (payload.messageID) {
-        context.dedupeSet?.add(payload.messageID);
+      const messageId = getMessageId(payload);
+      if (messageId) {
+        context.dedupeSet?.add(messageId);
       }
     }
 
     if (payload.type === 'message.part.delta') {
+      await this.switchMessageContext(context, payload);
       await this.handleTextDelta(context, payload);
       return;
     }
 
     if (payload.type === 'message.part.updated') {
+      await this.switchMessageContext(context, payload);
       await this.handlePartUpdated(context, payload);
       return;
     }
 
     if (payload.type === 'question.asked') {
-      await this.options.questionHandler.handleQuestionEvent(context.threadId, payload, context.client);
+      await this.options.questionHandler.handleQuestionEvent(context.threadId, getPayloadProperties(payload) ?? payload, context.client);
       return;
     }
 
     if (payload.type === 'permission.asked') {
-      await this.options.permissionHandler.handlePermissionEvent(context.threadId, payload, context.client);
+      await this.options.permissionHandler.handlePermissionEvent(context.threadId, getPayloadProperties(payload) ?? payload, context.client);
     }
   }
 
@@ -360,13 +374,15 @@ export class StreamHandler {
     context: ReturnType<StreamHandler['createContext']>,
     payload: GlobalEventLike['payload'],
   ): Promise<void> {
-    if (!payload.delta || (payload.field && payload.field !== 'text')) {
+    const delta = getPayloadString(payload, 'delta');
+    const field = getPayloadString(payload, 'field');
+    if (!delta || (field && field !== 'text')) {
       return;
     }
 
-    const partID = payload.partID ?? 'default';
-    context.parts.set(partID, `${context.parts.get(partID) ?? ''}${payload.delta}`);
-    context.aggregate += payload.delta;
+    const partID = getPayloadString(payload, 'partID') ?? 'default';
+    context.parts.set(partID, `${context.parts.get(partID) ?? ''}${delta}`);
+    context.aggregate += delta;
 
     if (!context.tableDetected && detectTable(context.aggregate)) {
       context.tableDetected = true;
@@ -380,7 +396,7 @@ export class StreamHandler {
     context: ReturnType<StreamHandler['createContext']>,
     payload: GlobalEventLike['payload'],
   ): Promise<void> {
-    const part = payload.part;
+    const part = getPayloadRecord(payload, 'part');
     if (!part || part.type !== 'tool') {
       return;
     }
@@ -437,6 +453,30 @@ export class StreamHandler {
     return `${content}\n\nRunning: ${tools.join(', ')}`;
   }
 
+  private async switchMessageContext(
+    context: ReturnType<StreamHandler['createContext']>,
+    payload: GlobalEventLike['payload'],
+  ): Promise<void> {
+    const messageId = getMessageId(payload);
+    if (!messageId || messageId === context.currentMessageId) {
+      return;
+    }
+
+    if (context.currentMessageId !== undefined) {
+      await this.render(context, true);
+      context.aggregate = '';
+      context.parts.clear();
+      context.currentMessage = undefined;
+      context.sentChunks = 0;
+      context.lastEditAt = Number.NEGATIVE_INFINITY;
+      context.lastRenderedContent = undefined;
+      context.runningTools.clear();
+      context.tableDetected = false;
+    }
+
+    context.currentMessageId = messageId;
+  }
+
   private async safeRender(context: ReturnType<StreamHandler['createContext']>): Promise<void> {
     try {
       await this.render(context, true);
@@ -457,7 +497,7 @@ export class StreamHandler {
     try {
       const autoConnectHandler = this.options.autoConnectHandler;
       const projectPath = event.directory ?? context.projectPath;
-      const session = event.payload.info;
+      const session = getPayloadValue(event.payload, 'info');
       const createdSessionId = getCreatedSessionId(session);
       if (!autoConnectHandler || !projectPath || !createdSessionId || autoConnectHandler.isSessionAttached(createdSessionId)) {
         return;
@@ -496,19 +536,52 @@ export class StreamHandler {
 }
 
 function isSessionScopedEvent(type: string): boolean {
-  return type === 'message.part.delta' || type === 'message.part.updated' || type === 'question.asked' || type === 'permission.asked';
+  return type === 'message.part.delta'
+    || type === 'message.part.updated'
+    || type === 'question.asked'
+    || type === 'permission.asked'
+    || type === 'session.idle';
 }
 
 function getSessionId(payload: GlobalEventLike['payload']): string | undefined {
-  if (payload.sessionID !== undefined) {
-    return payload.sessionID;
+  const sessionId = getPayloadString(payload, 'sessionID');
+  if (sessionId !== undefined) {
+    return sessionId;
   }
 
-  if (isRecord(payload.request) && typeof payload.request.sessionID === 'string') {
-    return payload.request.sessionID;
+  const request = getPayloadRecord(payload, 'request');
+  if (request && typeof request.sessionID === 'string') {
+    return request.sessionID;
   }
 
   return undefined;
+}
+
+function getMessageId(payload: GlobalEventLike['payload']): string | undefined {
+  return getPayloadString(payload, 'messageID');
+}
+
+function getPayloadRecord(payload: GlobalEventLike['payload'], key: string): Record<string, unknown> | undefined {
+  const value = getPayloadValue(payload, key);
+  return isRecord(value) ? value : undefined;
+}
+
+function getPayloadString(payload: GlobalEventLike['payload'], key: string): string | undefined {
+  const value = getPayloadValue(payload, key);
+  return typeof value === 'string' ? value : undefined;
+}
+
+function getPayloadValue(payload: GlobalEventLike['payload'], key: string): unknown {
+  const direct = payload[key as keyof GlobalEventLike['payload']];
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  return getPayloadProperties(payload)?.[key];
+}
+
+function getPayloadProperties(payload: GlobalEventLike['payload']): Record<string, unknown> | undefined {
+  return isRecord(payload.properties) ? payload.properties : undefined;
 }
 
 function getCreatedSessionId(session: unknown): string | undefined {
@@ -543,4 +616,21 @@ function getToolStatus(part: Record<string, unknown>): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Normalize OpenCode SDK event sources to an async iterable stream.
+ * @param source - SDK event source returned by global.event.
+ * @returns Async iterable of global events.
+ */
+export function getEventStream(source: OpenCodeEventSource): AsyncIterable<GlobalEventLike> {
+  if (isAsyncIterable(source)) {
+    return source;
+  }
+
+  return source.stream;
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<GlobalEventLike> {
+  return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
 }

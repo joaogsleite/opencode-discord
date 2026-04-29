@@ -9,7 +9,6 @@ Discord bot that maps channels to OpenCode agents. Multi-server, one `opencode s
 - Discord: discord.js v14
 - OpenCode: @opencode-ai/sdk/v2 (ALWAYS /v2 -- the root import is legacy v1)
 - Config: YAML + Zod validation
-- Build: tsup
 - Test: vitest
 
 ## Development Philosophy

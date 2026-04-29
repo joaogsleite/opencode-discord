@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { createOpencodeClient } from '@opencode-ai/sdk/v2';
 import type { AutocompleteInteraction, SlashCommandBuilder } from 'discord.js';
 import { createAgentCommandHandler } from './discord/commands/agent.js';
@@ -41,7 +42,7 @@ import { PermissionHandler, type PermissionThread } from './opencode/permissionH
 import { QuestionHandler, type QuestionThread } from './opencode/questionHandler.js';
 import { ServerManager } from './opencode/serverManager.js';
 import { SessionBridge } from './opencode/sessionBridge.js';
-import { StreamHandler } from './opencode/streamHandler.js';
+import { getEventStream, StreamHandler } from './opencode/streamHandler.js';
 import type { AutoConnectDelegate, PermissionEventDelegate, QuestionEventDelegate, StreamThread } from './opencode/streamHandler.js';
 import type { ChannelConfig } from './config/types.js';
 import type { BotConfig } from './config/types.js';
@@ -158,6 +159,50 @@ export interface StartedBot {
   cacheManager: CacheManagerLike;
   discordClient: DiscordClientLike;
   lifecycleController: LifecycleController;
+}
+
+/** Dependencies for running the CLI startup entrypoint. */
+export interface RunCliOptions {
+  start?: () => Promise<unknown>;
+  logger?: Pick<Logger, 'error'>;
+  processLike?: { exitCode?: number };
+}
+
+/**
+ * Determine whether this module is the process entrypoint.
+ * @param moduleUrl - Current module URL, usually import.meta.url
+ * @param argv - Process argv array to inspect
+ * @returns True when argv[1] resolves to this module file
+ */
+export function isDirectEntrypoint(moduleUrl: string, argv: string[]): boolean {
+  const entrypoint = argv[1];
+  return entrypoint !== undefined && fileURLToPath(moduleUrl) === entrypoint;
+}
+
+/**
+ * Run the bot from the command-line entrypoint and report startup failures.
+ * @param options - Optional injected dependencies for tests
+ * @returns Nothing
+ */
+export async function runCli(options: RunCliOptions = {}): Promise<void> {
+  const start = options.start ?? startBot;
+  const cliLogger = options.logger ?? logger;
+  const processLike = options.processLike ?? process;
+
+  try {
+    await start();
+  } catch (error) {
+    if (error instanceof BotError) {
+      cliLogger.error('Bot startup failed', {
+        ...error.context,
+        code: error.code,
+        error: error.message,
+      });
+    } else {
+      cliLogger.error('Bot startup failed', { error });
+    }
+    processLike.exitCode = 1;
+  }
 }
 
 /**
@@ -345,6 +390,7 @@ function registerDiscordRuntimeHandlers(client: DiscordClientLike, dependencies:
   });
 
   client.on?.('messageCreate', (message) => {
+    rememberMessageThread(message, dependencies.threadResolver);
     void handleMessageCreate(message as Parameters<typeof handleMessageCreate>[0], {
       contextBuffer: dependencies.contextBuffer,
       questionHandler: dependencies.questionHandler,
@@ -366,6 +412,21 @@ function registerDiscordRuntimeHandlers(client: DiscordClientLike, dependencies:
       stateManager: dependencies.stateManager as StateManager,
     });
   });
+}
+
+function rememberMessageThread(message: unknown, threadResolver: ThreadResolver): void {
+  if (!isRecord(message) || !isRecord(message.channel) || typeof message.channel.isThread !== 'function' || message.channel.isThread() !== true) {
+    return;
+  }
+
+  const threadId = typeof message.channel.id === 'string'
+    ? message.channel.id
+    : typeof message.channelId === 'string'
+      ? message.channelId
+      : undefined;
+  if (threadId !== undefined) {
+    threadResolver.remember(threadId, message.channel);
+  }
 }
 
 function asQuestionEventDelegate(questionHandler: QuestionHandler): QuestionEventDelegate {
@@ -413,7 +474,11 @@ function createRuntimeCommandHandlers(dependencies: RuntimeHandlerDependencies):
   const cacheManager = dependencies.cacheManager as CacheManager;
   const streamHandler = dependencies.streamHandler as never;
   return new Map<string, CommandHandler>([
-    ['new', createNewCommandHandler({ serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
+    ['new', createNewCommandHandler({
+      serverManager: dependencies.serverManager,
+      sessionBridge: dependencies.sessionBridge,
+      rememberThread: dependencies.threadResolver.remember,
+    })],
     ['connect', createConnectCommandHandler({ stateManager, serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
     ['agent', createAgentCommandHandler({ stateManager, serverManager: dependencies.serverManager, cacheManager })],
     ['model', createModelCommandHandler({ stateManager, serverManager: dependencies.serverManager, cacheManager })],
@@ -762,10 +827,7 @@ function subscribeToProjectEvents(
           return;
         }
 
-        const events = await globalApi.event();
-        if (!isAsyncIterable(events)) {
-          return;
-        }
+        const events = getEventStream(await globalApi.event() as never);
 
         for await (const event of events) {
           const session = getCreatedSession(event);
@@ -1173,6 +1235,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
-  return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
+if (isDirectEntrypoint(import.meta.url, process.argv)) {
+  void runCli();
 }
