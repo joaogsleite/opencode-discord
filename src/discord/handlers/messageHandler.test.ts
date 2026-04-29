@@ -4,6 +4,7 @@ import type { StateManager } from '../../state/manager.js';
 import type { SessionState } from '../../state/types.js';
 import {
   handleMessageCreate,
+  type AttachmentProvider,
   type ContextBuffer,
   type ContextFile,
   type QuestionAnswerHandler,
@@ -15,8 +16,10 @@ const NOW = 1_700_000_000_000;
 interface MockMessageOptions {
   author?: { id: string; bot: boolean };
   content?: string;
+  id?: string;
   channelId?: string;
   channel?: { id: string; isThread: () => boolean };
+  attachments?: unknown;
 }
 
 function createSession(overrides: Partial<SessionState> = {}): SessionState {
@@ -39,8 +42,10 @@ function createMessage(overrides: MockMessageOptions = {}): Message {
   return {
     author: { id: 'user-1', bot: false },
     content: 'hello agent',
+    id: 'message-1',
     channelId: 'thread-1',
     channel: { id: 'thread-1', isThread: () => true },
+    attachments: new Map(),
     ...overrides,
   } as unknown as Message;
 }
@@ -202,6 +207,48 @@ describe('handleMessageCreate', () => {
       'hello agent',
       expect.objectContaining({ contextFiles }),
     );
+  });
+
+  it('forwards downloaded Discord attachments with idle passthrough messages', async () => {
+    const contextFiles: ContextFile[] = [
+      { path: '/tmp/context.txt', url: 'file:///tmp/context.txt', filename: 'context.txt' },
+    ];
+    const attachmentFiles: ContextFile[] = [
+      { path: '/tmp/image.png', url: 'file:///tmp/image.png', mime: 'image/png', filename: 'image.png' },
+    ];
+    const options = createOptions(createSession());
+    const contextBuffer: ContextBuffer = { consume: vi.fn(async () => contextFiles) };
+    const attachmentProvider: AttachmentProvider = { download: vi.fn(async () => attachmentFiles) };
+
+    await handleMessageCreate(createMessage(), { ...options, contextBuffer, attachmentProvider });
+
+    expect(attachmentProvider.download).toHaveBeenCalledWith(expect.objectContaining({ id: 'message-1' }), createSession());
+    expect(options.sessionBridge.sendPrompt).toHaveBeenCalledWith(
+      'thread-1',
+      'hello agent',
+      expect.objectContaining({ contextFiles: [...contextFiles, ...attachmentFiles] }),
+    );
+  });
+
+  it('queues downloaded Discord attachment paths when the bridge is busy', async () => {
+    const session = createSession();
+    const options = createOptions(session, true);
+    const attachmentProvider: AttachmentProvider = {
+      download: vi.fn(async () => [
+        { path: '/tmp/image.png', url: 'file:///tmp/image.png', mime: 'image/png', filename: 'image.png' },
+      ]),
+    };
+
+    await handleMessageCreate(createMessage({ content: 'queue with file' }), { ...options, attachmentProvider });
+
+    expect(attachmentProvider.download).toHaveBeenCalledWith(expect.objectContaining({ id: 'message-1' }), session);
+    expect(options.stateManager.enqueue).toHaveBeenCalledWith('thread-1', {
+      userId: 'user-1',
+      content: 'queue with file',
+      attachments: ['/tmp/image.png'],
+      queuedAt: NOW,
+    });
+    expect(options.sessionBridge.sendPrompt).not.toHaveBeenCalled();
   });
 
   it('prefers channel.id over message.channelId for thread ID', async () => {

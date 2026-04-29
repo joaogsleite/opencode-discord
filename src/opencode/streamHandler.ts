@@ -250,18 +250,35 @@ export class StreamHandler {
     let failures = 0;
 
     while (!state.cancelled) {
+      let receivedEvent = false;
       try {
         const events = await client.global.event();
         for await (const event of events) {
           if (state.cancelled) {
             return;
           }
+          receivedEvent = true;
           await this.handleEvent(context, event);
         }
         await this.render(context, true);
-        return;
+        if (state.cancelled) {
+          return;
+        }
+        if (receivedEvent) {
+          return;
+        }
+        failures += 1;
+        if (failures > this.maxRetries) {
+          await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
+          return;
+        }
+        await this.delay(this.retryDelayMs);
+        await this.recoverMissedSessionsAfterReconnect(context);
       } catch {
         await this.safeRender(context);
+        if (receivedEvent) {
+          failures = 0;
+        }
         failures += 1;
         if (failures > this.maxRetries) {
           await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);

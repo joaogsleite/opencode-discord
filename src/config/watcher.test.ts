@@ -138,4 +138,41 @@ ${channelsBlock}
     expect(callback).toHaveBeenCalledTimes(1);
     expect(callback).toHaveBeenCalledWith(loader.getConfig());
   });
+
+  it('serializes overlapping reloads so callbacks run in source order', async () => {
+    writeConfig(['222', '333']);
+    let changeHandler: (() => void | Promise<void>) | undefined;
+    const watcher: Watcher = {
+      on: vi.fn((_event, handler) => {
+        changeHandler = handler;
+        return watcher;
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    let resolveFirstCleanup: () => void = () => undefined;
+    const firstCleanup = new Promise<void>((resolve) => {
+      resolveFirstCleanup = resolve;
+    });
+    const cleanup = vi.fn((_: string, channelId: string) => (channelId === '222' ? firstCleanup : Promise.resolve()));
+    const callbackChannels: string[][] = [];
+    const loader = new ConfigLoader(configPath);
+    await loader.load();
+    loader.onChange((config) => {
+      callbackChannels.push(config.servers[0]!.channels.map((channel) => channel.channelId));
+    });
+
+    loader.watch({ watcherFactory: () => watcher, onChannelRemoved: cleanup });
+    writeConfig(['333']);
+    const firstReload = changeHandler?.() ?? Promise.resolve();
+    writeConfig(['444']);
+    const secondReload = changeHandler?.() ?? Promise.resolve();
+    await Promise.resolve();
+
+    expect(callbackChannels).toEqual([]);
+
+    resolveFirstCleanup();
+    await Promise.all([firstReload, secondReload]);
+
+    expect(callbackChannels).toEqual([['333'], ['444']]);
+  });
 });

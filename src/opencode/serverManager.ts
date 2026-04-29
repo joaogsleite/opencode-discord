@@ -23,7 +23,23 @@ type HealthResult = Awaited<ReturnType<ServerManagerClient['global']['health']>>
 interface ChildProcessLike extends EventEmitter {
   pid?: number;
   killed?: boolean;
+  stdout?: { resume(): void } | null;
+  stderr?: { resume(): void } | null;
   kill(signal?: NodeJS.Signals): boolean;
+}
+
+class RecoveredProcess extends EventEmitter implements ChildProcessLike {
+  public killed = false;
+
+  public constructor(public readonly pid: number) {
+    super();
+  }
+
+  public kill(): boolean {
+    this.killed = true;
+    this.emit('exit', 0, null);
+    return true;
+  }
 }
 
 interface StateManagerLike {
@@ -193,6 +209,7 @@ export class ServerManager {
     const port = await this.allocatePort();
     const url = `http://127.0.0.1:${port}`;
     const serverProcess = this.spawnProcess(projectPath, port);
+    drainProcessOutput(serverProcess);
     const client = this.createClient(url);
     let managed: ManagedServer | undefined;
     let startupSettled = false;
@@ -259,6 +276,31 @@ export class ServerManager {
    */
   public getClient(projectPath: string): OpencodeClient | undefined {
     return this.servers.get(projectPath)?.client;
+  }
+
+  /**
+   * Register an already-running OpenCode server recovered during bot startup.
+   * @param projectPath - Project path used as the server key
+   * @param client - SDK client connected to the recovered server
+   * @param state - Persisted running server state
+   * @returns Nothing
+   */
+  public registerRecovered(projectPath: string, client: OpencodeClient, state: ServerState): void {
+    const existing = this.servers.get(projectPath);
+    if (existing !== undefined) {
+      return;
+    }
+
+    const managed: ManagedServer = {
+      client,
+      exited: false,
+      failures: 0,
+      process: new RecoveredProcess(state.pid),
+      state,
+    };
+    this.servers.set(projectPath, managed);
+    this.stateManager.setServer(projectPath, state);
+    this.startHealthMonitor(projectPath, managed);
   }
 
   /**
@@ -423,4 +465,9 @@ export class ServerManager {
       managed.idleTimer = undefined;
     }
   }
+}
+
+function drainProcessOutput(process: ChildProcessLike): void {
+  process.stdout?.resume();
+  process.stderr?.resume();
 }

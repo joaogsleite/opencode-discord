@@ -1,18 +1,48 @@
 import { execFile } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { createOpencodeClient } from '@opencode-ai/sdk/v2';
-import type { SlashCommandBuilder } from 'discord.js';
+import type { AutocompleteInteraction, SlashCommandBuilder } from 'discord.js';
+import { createAgentCommandHandler } from './discord/commands/agent.js';
+import { createCatCommandHandler } from './discord/commands/cat.js';
+import { createConnectCommandHandler } from './discord/commands/connect.js';
+import { ContextBuffer, createContextCommandHandler } from './discord/commands/context.js';
+import { createDiffCommandHandler } from './discord/commands/diff.js';
+import { createDownloadCommandHandler } from './discord/commands/download.js';
+import { createEndCommandHandler } from './discord/commands/end.js';
+import { createForkCommandHandler } from './discord/commands/fork.js';
+import { createGitCommandHandler } from './discord/commands/git.js';
+import { createHelpCommandHandler } from './discord/commands/help.js';
+import { createInfoCommandHandler } from './discord/commands/info.js';
+import { createInterruptCommandHandler } from './discord/commands/interrupt.js';
 import { getCommandDefinitions as defaultGetCommandDefinitions } from './discord/commands/index.js';
+import { createLsCommandHandler } from './discord/commands/ls.js';
+import { createMcpCommandHandler, getMcpAutocompleteChoices } from './discord/commands/mcp.js';
+import { createModelCommandHandler } from './discord/commands/model.js';
+import { createNewCommandHandler } from './discord/commands/new.js';
+import { createQueueCommandHandler } from './discord/commands/queue.js';
+import { createRestartCommandHandler } from './discord/commands/restart.js';
+import { createRetryCommandHandler } from './discord/commands/retry.js';
+import { createRevertCommandHandler, createUnrevertCommandHandler, getRevertAutocompleteChoices } from './discord/commands/revert.js';
+import { createStatusCommandHandler } from './discord/commands/status.js';
+import { createSummaryCommandHandler } from './discord/commands/summary.js';
+import { createTodoCommandHandler } from './discord/commands/todo.js';
 import {
   createDiscordClient as defaultCreateDiscordClient,
   registerLifecycleHandlers as defaultRegisterLifecycleHandlers,
 } from './discord/client.js';
 import type { LifecycleController, LifecycleHandlerOptions } from './discord/client.js';
 import { deployCommands as defaultDeployCommands } from './discord/deploy.js';
+import { handleInteraction } from './discord/handlers/interactionHandler.js';
+import type { AutocompleteHandler, CommandHandler } from './discord/handlers/interactionHandler.js';
+import { handleMessageCreate } from './discord/handlers/messageHandler.js';
 import { CacheManager } from './opencode/cache.js';
+import { PermissionHandler, type PermissionThread } from './opencode/permissionHandler.js';
+import { QuestionHandler, type QuestionThread } from './opencode/questionHandler.js';
 import { ServerManager } from './opencode/serverManager.js';
+import { SessionBridge } from './opencode/sessionBridge.js';
 import { StreamHandler } from './opencode/streamHandler.js';
-import type { AutoConnectDelegate, StreamThread } from './opencode/streamHandler.js';
+import type { AutoConnectDelegate, PermissionEventDelegate, QuestionEventDelegate, StreamThread } from './opencode/streamHandler.js';
 import type { ChannelConfig } from './config/types.js';
 import type { BotConfig } from './config/types.js';
 import type { BotState, ServerState, SessionState } from './state/types.js';
@@ -31,6 +61,7 @@ const logger = createLogger('startup');
 interface ConfigLoaderLike {
   load(): Promise<void> | void;
   getConfig(): BotConfig;
+  getChannelConfig?(guildId: string, channelId: string): ChannelConfig | undefined;
   onChange?(callback: (config: BotConfig) => void): void;
   watch?(options?: { onChannelRemoved?: (guildId: string, channelId: string, channelConfig: ChannelConfig) => Promise<void> | void }): void;
   close?(): Promise<void> | void;
@@ -53,6 +84,7 @@ interface ServerManagerLike {
   ensureRunning(projectPath: string): Promise<unknown>;
   getClient(projectPath: string): unknown | undefined;
   shutdownAll?(): Promise<void>;
+  registerRecovered?(projectPath: string, client: unknown, state: ServerState): void;
 }
 
 interface CacheManagerLike {
@@ -81,6 +113,8 @@ interface ProcessLike {
 /** Options supplied when constructing the default startup stream handler. */
 export interface StartupStreamHandlerOptions {
   getThread(threadId: string): StreamThread | undefined;
+  questionHandler: QuestionEventDelegate;
+  permissionHandler: PermissionEventDelegate;
   autoConnectHandler?: AutoConnectDelegate;
 }
 
@@ -93,6 +127,7 @@ export interface StartBotOptions {
   serverManager?: ServerManagerLike;
   cacheManager?: CacheManagerLike;
   streamHandler?: StreamHandlerLike;
+  sessionBridge?: SessionBridge;
   createStreamHandler?: (options: StartupStreamHandlerOptions) => StreamHandlerLike;
   createDiscordClient?: (token: string) => DiscordClientLike;
   deployCommands?: (token: string, guildId: string, commands: SlashCommandBuilder[]) => Promise<void> | void;
@@ -145,6 +180,11 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
   const cacheManager = options.cacheManager ?? new CacheManager({ logger: startupLogger });
   const discordClient = (options.createDiscordClient ?? defaultCreateDiscordClient)(config.discordToken);
   const threadResolver = createDiscordThreadResolver(discordClient, startupLogger);
+  const questionHandler = new QuestionHandler({ getThread: (threadId) => threadResolver.getCached(threadId) as QuestionThread | undefined });
+  const permissionHandler = new PermissionHandler({
+    getThread: (threadId) => threadResolver.getCached(threadId) as PermissionThread | undefined,
+    getChannelConfig: (threadId) => getChannelConfigForThread(stateManager, config, threadId),
+  });
   const knownAutoConnectSessionIds = new Set(Object.values(stateManager.getState().sessions).map((session) => session.sessionId));
   let dedupedAutoConnectSession: (projectPath: string, session: unknown, client: unknown, knownSessionIds: Set<string>) => Promise<void>;
   const autoConnectSession = options.autoConnectSession ?? ((projectPath: string, session: unknown, client: unknown) =>
@@ -158,6 +198,8 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
     }));
   const streamHandler = options.streamHandler ?? (options.createStreamHandler ?? createDefaultStreamHandler)({
     getThread: threadResolver.getCached,
+    questionHandler: asQuestionEventDelegate(questionHandler),
+    permissionHandler: asPermissionEventDelegate(permissionHandler),
     autoConnectHandler: {
       isSessionAttached: (sessionId) => knownAutoConnectSessionIds.has(sessionId) || isSessionAttached(stateManager, sessionId),
       handleSessionCreated: async (projectPath, session, client) => {
@@ -169,6 +211,8 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
     },
   });
   dedupedAutoConnectSession = dedupeAutoConnectSession(stateManager, autoConnectSession);
+  const sessionBridge = options.sessionBridge ?? new SessionBridge({ stateManager, streamSubscriber: asSessionStreamSubscriber(streamHandler) });
+  const contextBuffer = new ContextBuffer();
 
   const recoveredClients = await recoverServers(stateManager, cacheManager, {
     createClient: options.createClient ?? ((url) => createOpencodeClient({ baseUrl: url })),
@@ -176,6 +220,7 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
     isPidAlive: options.isPidAlive ?? defaultIsPidAlive,
     killPid: options.killPid ?? defaultKillPid,
     logger: asLifecycleLogger(startupLogger),
+    serverManager,
   });
   await discordClient.login(config.discordToken);
   const sessionsSkippedDuringRecovery = await recoverSessions(stateManager, serverManager, streamHandler, {
@@ -212,6 +257,18 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
   for (const server of config.servers) {
     await deployCommands(config.discordToken, server.serverId, commands);
   }
+
+  registerDiscordRuntimeHandlers(discordClient, {
+    cacheManager,
+    configLoader,
+    contextBuffer,
+    questionHandler,
+    serverManager,
+    sessionBridge,
+    stateManager,
+    streamHandler,
+    threadResolver,
+  });
 
   configLoader.onChange?.((nextConfig) => {
     config = nextConfig;
@@ -263,12 +320,265 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
   return { config, stateManager, serverManager, cacheManager, discordClient, lifecycleController: startedLifecycleController };
 }
 
+interface RuntimeHandlerDependencies {
+  cacheManager: CacheManagerLike;
+  configLoader: ConfigLoaderLike;
+  contextBuffer: ContextBuffer;
+  questionHandler: QuestionHandler;
+  serverManager: ServerManagerLike;
+  sessionBridge: SessionBridge;
+  stateManager: StateManagerLike;
+  streamHandler: StreamHandlerLike;
+  threadResolver: ThreadResolver;
+}
+
+function registerDiscordRuntimeHandlers(client: DiscordClientLike, dependencies: RuntimeHandlerDependencies): void {
+  const commandHandlers = createRuntimeCommandHandlers(dependencies);
+  const autocompleteHandler = createAutocompleteHandler(dependencies);
+
+  client.on?.('interactionCreate', (interaction) => {
+    void handleInteraction(interaction as Parameters<typeof handleInteraction>[0], {
+      autocompleteHandler,
+      commandHandlers,
+      configLoader: asInteractionConfigLoader(dependencies.configLoader),
+    });
+  });
+
+  client.on?.('messageCreate', (message) => {
+    void handleMessageCreate(message as Parameters<typeof handleMessageCreate>[0], {
+      contextBuffer: dependencies.contextBuffer,
+      questionHandler: dependencies.questionHandler,
+      sessionBridge: {
+        isBusy: () => false,
+        sendPrompt: async (threadId, content, options) => {
+          const clientForSession = await dependencies.serverManager.ensureRunning(options.session.projectPath) as Parameters<SessionBridge['sendPrompt']>[1]['client'];
+          await dependencies.sessionBridge.sendPrompt(threadId, {
+            client: clientForSession,
+            content,
+            files: options.contextFiles.map((file) => ({
+              url: file.url,
+              mime: file.mime ?? 'application/octet-stream',
+              filename: file.filename,
+            })),
+          });
+        },
+      },
+      stateManager: dependencies.stateManager as StateManager,
+    });
+  });
+}
+
+function asQuestionEventDelegate(questionHandler: QuestionHandler): QuestionEventDelegate {
+  return {
+    handleQuestionEvent: async (threadId, event, client) => {
+      await questionHandler.handleQuestionEvent(threadId, event, client as never);
+    },
+  };
+}
+
+function asPermissionEventDelegate(permissionHandler: PermissionHandler): PermissionEventDelegate {
+  return {
+    handlePermissionEvent: async (threadId, event, client) => {
+      await permissionHandler.handlePermissionEvent(threadId, event, client as never);
+    },
+  };
+}
+
+function asInteractionConfigLoader(configLoader: ConfigLoaderLike): ConfigLoader {
+  return {
+    getChannelConfig: (guildId: string, channelId: string) => {
+      if (typeof configLoader.getChannelConfig === 'function') {
+        return configLoader.getChannelConfig(guildId, channelId);
+      }
+
+      const server = configLoader.getConfig().servers.find((item) => item.serverId === guildId);
+      return server?.channels.find((channel) => channel.channelId === channelId);
+    },
+  } as ConfigLoader;
+}
+
+function getChannelConfigForThread(stateManager: StateManagerLike, config: BotConfig, threadId: string): ChannelConfig | undefined {
+  const session = stateManager.getSession(threadId);
+  if (session === undefined) {
+    return undefined;
+  }
+
+  const server = config.servers.find((item) => item.serverId === session.guildId);
+  return server?.channels.find((channel) => channel.channelId === session.channelId);
+}
+
+function createRuntimeCommandHandlers(dependencies: RuntimeHandlerDependencies): Map<string, CommandHandler> {
+  const stateManager = dependencies.stateManager as StateManager;
+  const serverManager = dependencies.serverManager as never;
+  const cacheManager = dependencies.cacheManager as CacheManager;
+  const streamHandler = dependencies.streamHandler as never;
+  return new Map<string, CommandHandler>([
+    ['new', createNewCommandHandler({ serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
+    ['connect', createConnectCommandHandler({ stateManager, serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
+    ['agent', createAgentCommandHandler({ stateManager, serverManager: dependencies.serverManager, cacheManager })],
+    ['model', createModelCommandHandler({ stateManager, serverManager: dependencies.serverManager, cacheManager })],
+    ['interrupt', createInterruptCommandHandler({ stateManager, serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
+    ['queue', createQueueCommandHandler({ stateManager: { getQueue: stateManager.getQueue.bind(stateManager), clearQueue: stateManager.clearQueue.bind(stateManager) } })],
+    ['info', createInfoCommandHandler({ stateManager, serverManager: dependencies.serverManager, cacheManager })],
+    ['end', createEndCommandHandler({ stateManager, serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
+    ['status', createStatusCommandHandler({ stateManager })],
+    ['help', createHelpCommandHandler()],
+    ['git', createGitCommandHandler()],
+    ['ls', createLsCommandHandler()],
+    ['cat', createCatCommandHandler()],
+    ['download', createDownloadCommandHandler()],
+    ['restart', createRestartCommandHandler({
+      cacheManager: cacheManager as never,
+      getThread: dependencies.threadResolver.getCached,
+      serverManager,
+      stateManager,
+      streamHandler,
+    })],
+    ['mcp', createMcpCommandHandler({ serverManager: dependencies.serverManager, cacheManager: cacheManager as never })],
+    ['diff', createDiffCommandHandler({ stateManager, serverManager: dependencies.serverManager })],
+    ['revert', createRevertCommandHandler({ stateManager, serverManager: dependencies.serverManager })],
+    ['unrevert', createUnrevertCommandHandler({ stateManager, serverManager: dependencies.serverManager })],
+    ['summary', createSummaryCommandHandler({ stateManager, serverManager: dependencies.serverManager })],
+    ['fork', createForkCommandHandler({ stateManager, serverManager: dependencies.serverManager, streamHandler })],
+    ['todo', createTodoCommandHandler({ stateManager, serverManager: dependencies.serverManager })],
+    ['retry', createRetryCommandHandler({ stateManager, serverManager: dependencies.serverManager, sessionBridge: dependencies.sessionBridge })],
+    ['context', createContextCommandHandler({ buffer: dependencies.contextBuffer })],
+  ]);
+}
+
+function createAutocompleteHandler(dependencies: RuntimeHandlerDependencies): AutocompleteHandler {
+  return async (interaction, context) => {
+    const channelConfig = context.channelConfig;
+    if (channelConfig === undefined) {
+      return [];
+    }
+
+    const focused = interaction.options.getFocused(true);
+    const value = String(focused.value ?? '');
+    const cacheManager = dependencies.cacheManager as CacheManager;
+    if (focused.name === 'agent') {
+      return cacheManager.getAgents(channelConfig.projectPath)
+        .map((agent) => getAutocompleteName(agent))
+        .filter((name): name is string => Boolean(name))
+        .filter((name) => !channelConfig.allowedAgents?.length || channelConfig.allowedAgents.includes(name))
+        .filter((name) => name.toLowerCase().includes(value.toLowerCase()))
+        .slice(0, 25)
+        .map((name) => ({ name, value: name }));
+    }
+
+    if (focused.name === 'model') {
+      return listCachedModelIds(cacheManager.getModels(channelConfig.projectPath))
+        .filter((model) => model.toLowerCase().includes(value.toLowerCase()))
+        .slice(0, 25)
+        .map((model) => ({ name: model, value: model }));
+    }
+
+    if (focused.name === 'session') {
+      return cacheManager.getSessions(channelConfig.projectPath)
+        .map((session) => {
+          const sessionId = getSessionId(session);
+          return { name: sessionId ? getSessionTitle(session, sessionId) : undefined, value: sessionId };
+        })
+        .filter((choice): choice is { name: string; value: string } => Boolean(choice.name && choice.value))
+        .filter((choice) => choice.name.toLowerCase().includes(value.toLowerCase()))
+        .slice(0, 25);
+    }
+
+    if (focused.name.startsWith('file') || focused.name === 'path') {
+      return await getPathAutocompleteChoices(channelConfig.projectPath, value);
+    }
+
+    if (focused.name === 'name' && interaction.commandName === 'mcp') {
+      return getMcpAutocompleteChoices(cacheManager.getMcpStatus(channelConfig.projectPath), value);
+    }
+
+    if (focused.name === 'message') {
+      return await getMessageAutocompleteChoices(interaction, dependencies.serverManager, dependencies.stateManager);
+    }
+
+    return [];
+  };
+}
+
+function asSessionStreamSubscriber(streamHandler: StreamHandlerLike): ConstructorParameters<typeof SessionBridge>[0]['streamSubscriber'] {
+  return {
+    subscribe: async (threadId, sessionId, client, dedupeSet) => {
+      await streamHandler.subscribe(threadId, sessionId, client, dedupeSet);
+    },
+  };
+}
+
+function getAutocompleteName(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return typeof value.name === 'string' ? value.name : typeof value.id === 'string' ? value.id : undefined;
+}
+
+function listCachedModelIds(providers: unknown[]): string[] {
+  return providers.flatMap((provider) => {
+    const providerId = getAutocompleteName(provider);
+    const models = isRecord(provider) && Array.isArray(provider.models) ? provider.models : [];
+    return providerId === undefined ? [] : models.map((model) => {
+      if (typeof model === 'string') {
+        return `${providerId}/${model}`;
+      }
+      if (isRecord(model) && typeof model.id === 'string') {
+        return `${providerId}/${model.id}`;
+      }
+      return undefined;
+    }).filter((model): model is string => Boolean(model));
+  });
+}
+
+async function getPathAutocompleteChoices(projectPath: string, value: string): Promise<Array<{ name: string; value: string }>> {
+  const path = await import('node:path');
+  const directoryInput = value.endsWith('/') ? value : path.dirname(value);
+  const partial = value.endsWith('/') ? '' : path.basename(value);
+  const relativeDirectory = directoryInput === '.' ? '' : directoryInput;
+  const absoluteDirectory = path.resolve(projectPath, relativeDirectory || '.');
+  const normalizedRoot = path.resolve(projectPath);
+  if (absoluteDirectory !== normalizedRoot && !absoluteDirectory.startsWith(normalizedRoot + path.sep)) {
+    return [];
+  }
+
+  try {
+    const entries = await readdir(absoluteDirectory, { withFileTypes: true });
+    return entries
+      .map((entry) => `${relativeDirectory ? `${relativeDirectory}/` : ''}${entry.name}${entry.isDirectory() ? '/' : ''}`)
+      .filter((entry) => path.basename(entry.replace(/\/$/, '')).toLowerCase().startsWith(partial.toLowerCase()))
+      .slice(0, 25)
+      .map((entry) => ({ name: entry, value: entry }));
+  } catch {
+    return [];
+  }
+}
+
+async function getMessageAutocompleteChoices(
+  interaction: AutocompleteInteraction,
+  serverManager: ServerManagerLike,
+  stateManager: StateManagerLike,
+): Promise<Array<{ name: string; value: string }>> {
+  const session = stateManager.getSession(interaction.channelId);
+  if (session === undefined) {
+    return [];
+  }
+  const client = serverManager.getClient(session.projectPath);
+  if (!isRecord(client) || !isRecord(client.session) || typeof client.session.messages !== 'function') {
+    return [];
+  }
+  const response = await client.session.messages({ sessionID: session.sessionId, limit: 15 });
+  const messages = isRecord(response) && Array.isArray(response.data) ? response.data : Array.isArray(response) ? response : [];
+  return getRevertAutocompleteChoices(messages);
+}
+
 interface ServerRecoveryDependencies {
   createClient(url: string): unknown;
   healthCheck(client: unknown): Promise<boolean> | boolean;
   isPidAlive(pid: number): boolean;
   killPid(pid: number): void;
   logger: Pick<Logger, 'warn'>;
+  serverManager?: Pick<ServerManagerLike, 'registerRecovered'>;
 }
 
 interface SessionRecoveryDependencies {
@@ -306,6 +616,7 @@ async function recoverServers(
     const client = dependencies.createClient(server.url);
     if (await dependencies.healthCheck(client)) {
       recoveredClients.set(projectPath, client);
+      dependencies.serverManager?.registerRecovered?.(projectPath, client, server);
       await warnOnFailure(dependencies.logger, 'Failed to refresh recovered OpenCode cache', { projectPath }, async () => {
         await cacheManager.refresh(projectPath, client);
       });
@@ -681,8 +992,8 @@ function isStreamThread(thread: unknown): thread is StreamThread {
 function createDefaultStreamHandler(options: StartupStreamHandlerOptions): StreamHandlerLike {
   return new StreamHandler({
     getThread: options.getThread,
-    questionHandler: { handleQuestionEvent: async () => {} },
-    permissionHandler: { handlePermissionEvent: async () => {} },
+    questionHandler: options.questionHandler,
+    permissionHandler: options.permissionHandler,
     autoConnectHandler: options.autoConnectHandler,
   });
 }

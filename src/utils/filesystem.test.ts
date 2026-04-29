@@ -5,6 +5,15 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 
 describe('resolveSafePath', () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
   it('resolves relative path within project root', () => {
     const result = resolveSafePath('/project', 'src/index.ts');
     expect(result).toBe('/project/src/index.ts');
@@ -26,6 +35,30 @@ describe('resolveSafePath', () => {
   it('handles nested ../ that stays within project', () => {
     const result = resolveSafePath('/project', 'src/../lib/utils.ts');
     expect(result).toBe('/project/lib/utils.ts');
+  });
+
+  it('rejects a symlink inside the project root that resolves outside', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-path-test-'));
+    const projectRoot = path.join(tmpDir, 'project');
+    const outsideRoot = path.join(tmpDir, 'outside');
+    fs.mkdirSync(projectRoot);
+    fs.mkdirSync(outsideRoot);
+    fs.writeFileSync(path.join(outsideRoot, 'secret.txt'), 'secret');
+    fs.symlinkSync(outsideRoot, path.join(projectRoot, 'linked-outside'));
+
+    expect(() => resolveSafePath(projectRoot, 'linked-outside/secret.txt')).toThrow();
+  });
+
+  it('accepts a symlink inside the project root that resolves inside', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-path-test-'));
+    const projectRoot = path.join(tmpDir, 'project');
+    const targetRoot = path.join(projectRoot, 'actual');
+    fs.mkdirSync(projectRoot);
+    fs.mkdirSync(targetRoot);
+    fs.writeFileSync(path.join(targetRoot, 'note.txt'), 'note');
+    fs.symlinkSync(targetRoot, path.join(projectRoot, 'linked-inside'));
+
+    expect(resolveSafePath(projectRoot, 'linked-inside/note.txt')).toBe(fs.realpathSync.native(path.join(targetRoot, 'note.txt')));
   });
 });
 

@@ -7,6 +7,8 @@ import { ErrorCode } from '../utils/errors.js';
 
 class MockProcess extends EventEmitter {
   public killed = false;
+  public stdout?: { resume: ReturnType<typeof vi.fn<() => void>> };
+  public stderr?: { resume: ReturnType<typeof vi.fn<() => void>> };
 
   public constructor(public readonly pid: number) {
     super();
@@ -117,6 +119,48 @@ describe('ServerManager', () => {
 
     expect(result).toBe(client);
     expect(spawnProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses a registered recovered client without spawning a duplicate server', async () => {
+    const spawnProcess = vi.fn(() => process);
+    const recoveredState: ServerState = {
+      port: 4321,
+      pid: 1234,
+      url: 'http://127.0.0.1:4321',
+      startedAt: 1000,
+      status: 'running',
+    };
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess,
+      allocatePort: async () => 9999,
+      createClient: () => createClient('duplicate-client'),
+      healthCheck: async () => true,
+    });
+
+    manager.registerRecovered(projectPath, client, recoveredState);
+
+    expect(manager.getClient(projectPath)).toBe(client);
+    await expect(manager.ensureRunning(projectPath)).resolves.toBe(client);
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(stateManager.setServer).toHaveBeenCalledWith(projectPath, recoveredState);
+  });
+
+  it('drains spawned stdout and stderr pipes', async () => {
+    process.stdout = { resume: vi.fn() };
+    process.stderr = { resume: vi.fn() };
+    const manager = new ServerManager({
+      stateManager,
+      spawnProcess: () => process,
+      allocatePort: async () => 4321,
+      createClient: () => client,
+      healthCheck: async () => true,
+    });
+
+    await manager.ensureRunning(projectPath);
+
+    expect(process.stdout.resume).toHaveBeenCalledOnce();
+    expect(process.stderr.resume).toHaveBeenCalledOnce();
   });
 
   it('polls health until the server becomes healthy', async () => {

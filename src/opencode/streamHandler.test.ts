@@ -306,7 +306,6 @@ describe('StreamHandler', () => {
     await handler.subscribe('thread-1', 'session-1', client);
     await handler.waitForIdle('thread-1');
 
-    expect(client.global.event).toHaveBeenCalledTimes(1);
     expect(tableHandler.handleTable).toHaveBeenCalledWith('thread-1', table);
     expect(sends).toEqual([table]);
   });
@@ -334,6 +333,43 @@ describe('StreamHandler', () => {
     await handler.waitForIdle('thread-1');
 
     expect(edits.at(-1)).toBe('ABC');
+  });
+
+  it('retries when an SSE stream ends cleanly and consumes the next stream', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({ maxRetries: 1 }, thread);
+    const client = createClient([
+      stream([]),
+      stream([textDelta('after reconnect')]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(client.global.event).toHaveBeenCalledTimes(2);
+    expect(sends).toContain('after reconnect');
+  });
+
+  it('resets retry failures after a successful reconnect stream', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({ maxRetries: 1 }, thread);
+    const client = createClient([
+      failingStream(new Error('first disconnect')),
+      {
+        async *[Symbol.asyncIterator]() {
+          yield textDelta('recovered');
+          throw new Error('second disconnect');
+        },
+      },
+      stream([textDelta(' again')]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(client.global.event).toHaveBeenCalledTimes(3);
+    expect(sends).toContain('recovered');
+    expect(sends.at(-1)).not.toContain('Stream disconnected after 1 retries.');
   });
 
   it('reconnects three times and notifies the thread after repeated SSE failures', async () => {

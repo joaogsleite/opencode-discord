@@ -38,6 +38,7 @@ export class ConfigLoader {
   private config: ValidatedConfig | null = null;
   private readonly callbacks: ChangeCallback[] = [];
   private watcher: Watcher | null = null;
+  private reloadQueue: Promise<void> | null = null;
 
   /**
    * Create a config loader for a YAML file path.
@@ -147,7 +148,7 @@ export class ConfigLoader {
     const watcherFactory = options.watcherFactory ?? chokidarWatch;
     this.watcher = watcherFactory(this.configPath);
     this.watcher.on('change', async () => {
-      await this.reloadFromWatcher(options.onChannelRemoved);
+      await this.queueReloadFromWatcher(options.onChannelRemoved);
     });
   }
 
@@ -162,6 +163,31 @@ export class ConfigLoader {
 
     await this.watcher.close();
     this.watcher = null;
+  }
+
+  private queueReloadFromWatcher(onChannelRemoved?: ChannelRemovedCallback): Promise<void> {
+    if (!this.reloadQueue) {
+      let queued: Promise<void>;
+      queued = this.reloadFromWatcher(onChannelRemoved).finally(() => {
+        if (this.reloadQueue === queued) {
+          this.reloadQueue = null;
+        }
+      });
+      this.reloadQueue = queued;
+      return queued;
+    }
+
+    let queued: Promise<void>;
+    queued = this.reloadQueue
+      .catch(() => undefined)
+      .then(() => this.reloadFromWatcher(onChannelRemoved))
+      .finally(() => {
+        if (this.reloadQueue === queued) {
+          this.reloadQueue = null;
+        }
+      });
+    this.reloadQueue = queued;
+    return queued;
   }
 
   private async reloadFromWatcher(onChannelRemoved?: ChannelRemovedCallback): Promise<void> {

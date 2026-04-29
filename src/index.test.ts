@@ -234,6 +234,178 @@ describe('startBot', () => {
     expect(opencodeClient.session.abort).toHaveBeenCalledWith({ sessionID: 'session-1' });
   });
 
+  it('registers Discord interaction and message handlers during startup', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const stateManager = {
+      load: vi.fn(),
+      getState: vi.fn(() => state),
+      setServer: vi.fn(),
+      getServer: vi.fn(),
+      removeServer: vi.fn(),
+      getSession: vi.fn(),
+      setSession: vi.fn(),
+      removeSession: vi.fn(),
+      getQueue: vi.fn(() => []),
+      clearQueue: vi.fn(),
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager,
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(),
+        shutdownAll: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+    });
+
+    expect(discordClient.on).toHaveBeenCalledWith('interactionCreate', expect.any(Function));
+    expect(discordClient.on).toHaveBeenCalledWith('messageCreate', expect.any(Function));
+    expect(discordClient.on).toHaveBeenCalledWith('threadDelete', expect.any(Function));
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => void) | undefined;
+    const reply = vi.fn();
+    await interactionListener?.({
+      id: 'interaction-1',
+      channelId: 'channel-1',
+      channel: null,
+      guildId: 'guild-1',
+      commandName: 'help',
+      user: { id: 'user-1' },
+      replied: false,
+      deferred: false,
+      isChatInputCommand: () => true,
+      isAutocomplete: () => false,
+      reply,
+      followUp: vi.fn(),
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+  });
+
+  it('wires real question and permission handlers into the default stream handler', async () => {
+    const session: SessionState = {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/project/one',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1,
+      lastActivityAt: 1,
+      status: 'active',
+    };
+    const state: BotState = {
+      version: 1,
+      servers: {
+        '/project/one': {
+          port: 1234,
+          pid: 4321,
+          url: 'http://127.0.0.1:1234',
+          startedAt: 1,
+          status: 'running',
+        },
+      },
+      sessions: { 'thread-1': session },
+      queues: {},
+    };
+    const captured = { questionHandler: undefined as unknown, permissionHandler: undefined as unknown };
+    const thread = {
+      send: vi.fn(async () => ({
+        createMessageComponentCollector: vi.fn(() => ({ on: vi.fn() })),
+      })),
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn(async () => thread) },
+      on: vi.fn(),
+      off: vi.fn(),
+      destroy: vi.fn(),
+    };
+    const streamHandler = {
+      subscribe: vi.fn(),
+    };
+    const createStreamHandler = vi.fn((options: { questionHandler?: unknown; permissionHandler?: unknown }) => {
+      captured.questionHandler = options.questionHandler;
+      captured.permissionHandler = options.permissionHandler;
+      return streamHandler;
+    });
+    const questionClient = { question: { reply: vi.fn(), reject: vi.fn() } };
+    const permissionClient = { permission: { reply: vi.fn() } };
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => state),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn((threadId: string) => state.sessions[threadId]),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(),
+        shutdownAll: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      createStreamHandler,
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      isPidAlive: vi.fn(() => true),
+      createClient: vi.fn(() => ({ id: 'recovered-client' })),
+      healthCheck: vi.fn(() => true),
+    });
+
+    expect(captured.questionHandler).toBeDefined();
+    await (captured.questionHandler as { handleQuestionEvent(threadId: string, event: unknown, client: unknown): Promise<void> }).handleQuestionEvent(
+      'thread-1',
+      { request: { id: 'question-1', sessionID: 'session-1', questions: [{ header: 'Choose', question: 'Proceed?', options: [{ label: 'Yes', description: 'Continue' }] }] } },
+      questionClient,
+    );
+    expect(questionClient.question.reject).toHaveBeenCalledWith({ requestID: 'question-1' });
+
+    expect(captured.permissionHandler).toBeDefined();
+    await (captured.permissionHandler as { handlePermissionEvent(threadId: string, event: unknown, client: unknown): Promise<void> }).handlePermissionEvent(
+      'thread-1',
+      { request: { id: 'permission-1', sessionID: 'session-1', permission: 'write', patterns: ['src/**'] } },
+      permissionClient,
+    );
+    expect(permissionClient.permission.reply).toHaveBeenCalledWith({ requestID: 'permission-1', reply: 'always' });
+  });
+
   it('shuts down recovered servers and aborts recovered sessions not known to ServerManager', async () => {
     const server: ServerState = {
       port: 1234,
@@ -707,6 +879,62 @@ describe('startBot', () => {
     expect(cacheManager.refresh).toHaveBeenCalledWith('/project/recovered', recoveredClient);
     expect(streamHandler.subscribe).toHaveBeenCalledWith('thread-1', 'session-1', recoveredClient, undefined, '/project/recovered');
     expect(notifyThread).toHaveBeenCalledWith('thread-1', 'Bot restarted. Session reconnected.');
+  });
+
+  it('registers healthy recovered server clients with ServerManager when supported', async () => {
+    const server: ServerState = {
+      port: 1234,
+      pid: 111,
+      url: 'http://127.0.0.1:1234',
+      startedAt: 10,
+      status: 'running',
+    };
+    const state: BotState = {
+      version: 1,
+      servers: { '/project/recovered': server },
+      sessions: {},
+      queues: {},
+    };
+    const recoveredClient = { id: 'recovered-client' };
+    const registerRecovered = vi.fn();
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/recovered' }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => state),
+        setServer: vi.fn(),
+        getServer: vi.fn((projectPath: string) => state.servers[projectPath]),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(() => undefined),
+        registerRecovered,
+      },
+      cacheManager: { refresh: vi.fn() },
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => ({ login: vi.fn(), on: vi.fn() })),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      isPidAlive: vi.fn(() => true),
+      createClient: vi.fn(() => recoveredClient),
+      healthCheck: vi.fn(() => true),
+    });
+
+    expect(registerRecovered).toHaveBeenCalledWith('/project/recovered', recoveredClient, server);
   });
 
   it('uses the default Discord client to find recovered threads and post restart notices', async () => {

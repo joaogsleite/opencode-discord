@@ -21,7 +21,36 @@ export function resolveSafePath(projectRoot: string, relativePath: string): stri
     });
   }
 
-  return resolved;
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync.native(normalizedRoot);
+  } catch {
+    realRoot = normalizedRoot;
+  }
+
+  let realResolved: string;
+  try {
+    realResolved = fs.realpathSync.native(resolved);
+  } catch (error) {
+    if (!isNodeErrorCode(error, 'ENOENT')) {
+      throw error;
+    }
+    realResolved = resolved;
+  }
+
+  if (realResolved !== realRoot && !realResolved.startsWith(realRoot + path.sep)) {
+    throw new BotError(ErrorCode.PATH_ESCAPE, `Path escapes project root: ${relativePath}`, {
+      projectRoot,
+      relativePath,
+      resolved: realResolved,
+    });
+  }
+
+  return realResolved;
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 
 /**

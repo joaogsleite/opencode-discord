@@ -40,11 +40,11 @@ export class StateManager {
   }
 
   /**
-   * Get the full in-memory state object.
-   * @returns Current bot state
+   * Get a snapshot of the current state.
+   * @returns Deep-cloned current bot state
    */
   getState(): BotState {
-    return this.state;
+    return structuredClone(this.state);
   }
 
   /**

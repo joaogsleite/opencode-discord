@@ -1,4 +1,6 @@
 import type { Message } from 'discord.js';
+import { pathToFileURL } from 'node:url';
+import { downloadAndSave, type DiscordAttachmentLike } from '../../opencode/attachments.js';
 import type { StateManager } from '../../state/manager.js';
 import type { SessionState } from '../../state/types.js';
 import { generateCorrelationId } from '../../utils/logger.js';
@@ -73,12 +75,24 @@ export interface ContextBuffer {
   clear?(threadId: string): void;
 }
 
+/** Downloads Discord message attachments into files OpenCode can consume. */
+export interface AttachmentProvider {
+  /**
+   * Download attachments for a message and session.
+   * @param message - Discord message containing attachments.
+   * @param session - Active session that owns attachment storage.
+   * @returns Saved files to include with a prompt.
+   */
+  download(message: Message, session: SessionState): Promise<ContextFile[]>;
+}
+
 /** Dependencies for handling Discord messageCreate events. */
 export interface MessageHandlerOptions {
   stateManager: StateManager;
   questionHandler: QuestionAnswerHandler;
   sessionBridge: SessionPromptBridge;
   contextBuffer?: ContextBuffer;
+  attachmentProvider?: AttachmentProvider;
   now?: () => number;
 }
 
@@ -122,11 +136,13 @@ export async function handleMessageCreate(
     options.stateManager.setSession(threadId, session);
   }
 
+  const attachmentFiles = await downloadAttachments(options.attachmentProvider, message, session);
+
   if (options.sessionBridge.isBusy(threadId)) {
     options.stateManager.enqueue(threadId, {
       userId: message.author.id,
       content: message.content,
-      attachments: [],
+      attachments: attachmentFiles.map((file) => file.path),
       queuedAt: now,
     });
     return;
@@ -136,6 +152,35 @@ export async function handleMessageCreate(
   await options.sessionBridge.sendPrompt(threadId, message.content, {
     session,
     correlationId,
-    contextFiles,
+    contextFiles: [...contextFiles, ...attachmentFiles],
   });
+}
+
+async function downloadAttachments(
+  attachmentProvider: AttachmentProvider | undefined,
+  message: Message,
+  session: SessionState,
+): Promise<ContextFile[]> {
+  if (attachmentProvider) {
+    return attachmentProvider.download(message, session);
+  }
+
+  return Promise.all(getDiscordAttachments(message).map(async (attachment) => {
+    const saved = await downloadAndSave(attachment, session.projectPath, { messageId: message.id });
+    return {
+      path: saved.path,
+      url: pathToFileURL(saved.path).href,
+      mime: saved.mime,
+      filename: saved.filename,
+    };
+  }));
+}
+
+function getDiscordAttachments(message: Message): DiscordAttachmentLike[] {
+  return Array.from(message.attachments.values()).map((attachment) => ({
+    id: attachment.id,
+    url: attachment.url,
+    name: attachment.name,
+    contentType: attachment.contentType,
+  }));
 }

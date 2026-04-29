@@ -42,6 +42,31 @@ describe('StateManager', () => {
     });
   });
 
+  describe('getState', () => {
+    it('returns a snapshot that cannot mutate internal state without persistence', () => {
+      manager.load();
+      manager.setSession('thread1', {
+        sessionId: 'sess_1',
+        guildId: 'g1',
+        channelId: 'c1',
+        projectPath: '/tmp/p',
+        agent: 'code',
+        model: null,
+        createdBy: 'u1',
+        createdAt: 1000,
+        lastActivityAt: 1000,
+        status: 'active',
+      });
+
+      const snapshot = manager.getState();
+      snapshot.sessions.thread1!.sessionId = 'mutated';
+      snapshot.queues.thread1 = [{ userId: 'u1', content: 'bypass', attachments: [], queuedAt: 1000 }];
+
+      expect(manager.getSession('thread1')?.sessionId).toBe('sess_1');
+      expect(manager.getQueue('thread1')).toEqual([]);
+    });
+  });
+
   describe('save', () => {
     it('writes state to disk atomically', () => {
       manager.load();
