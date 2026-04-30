@@ -99,6 +99,16 @@ function unwrapResult(response: unknown): unknown {
   return response;
 }
 
+function filterSessionsByProject(sessions: unknown[], projectPath: string): unknown[] {
+  return sessions.filter((session) => {
+    if (!isRecord(session) || typeof session.directory !== 'string') {
+      return true;
+    }
+
+    return session.directory === projectPath;
+  });
+}
+
 function copyCache(projectCache: ProjectCache): ProjectCache {
   return {
     agents: [...projectCache.agents],
@@ -169,7 +179,7 @@ export class CacheManager {
       sessions: await this.fetchOrDefault(
         'sessions',
         projectPath,
-        async () => normalizeArray(await client.session.list()),
+        async () => filterSessionsByProject(normalizeArray(await client.session.list()), projectPath),
         previous.sessions,
       ),
       mcpStatus: await this.fetchOrDefault(

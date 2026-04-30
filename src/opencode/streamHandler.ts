@@ -138,11 +138,13 @@ export interface StreamHandlerOptions {
 interface SubscriptionState {
   cancelled: boolean;
   pumpPromise: Promise<void>;
+  typingInterval?: ReturnType<typeof setInterval>;
 }
 
 const DEFAULT_EDIT_THROTTLE_MS = 1000;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRIES = 3;
+const TYPING_REFRESH_MS = 9000;
 
 /** Streams OpenCode SSE events into Discord thread messages. */
 export class StreamHandler {
@@ -188,6 +190,7 @@ export class StreamHandler {
     const previous = this.subscriptions.get(threadId);
     if (previous !== undefined) {
       previous.cancelled = true;
+      this.stopTyping(previous);
     }
 
     const state: SubscriptionState = {
@@ -218,6 +221,7 @@ export class StreamHandler {
     const state = this.subscriptions.get(threadId);
     if (state) {
       state.cancelled = true;
+      this.stopTyping(state);
     }
     this.subscriptions.delete(threadId);
   }
@@ -249,47 +253,78 @@ export class StreamHandler {
     dedupeSet: Set<string> | undefined,
     projectPath: string | undefined,
   ): Promise<void> {
-    const context = this.createContext(threadId, sessionId, client, thread, dedupeSet, projectPath);
+    const context = this.createContext(threadId, sessionId, client, thread, state, dedupeSet, projectPath);
     let failures = 0;
+    this.startTyping(thread, state, threadId, sessionId);
 
-    while (!state.cancelled) {
-      let receivedEvent = false;
-      try {
-        const events = getEventStream(await client.global.event());
-        for await (const event of events) {
+    try {
+      while (!state.cancelled) {
+        let receivedEvent = false;
+        try {
+          const events = getEventStream(await client.global.event());
+          for await (const event of events) {
+            if (state.cancelled) {
+              return;
+            }
+            receivedEvent = true;
+            await this.handleEvent(context, event);
+          }
+          await this.render(context, true);
           if (state.cancelled) {
             return;
           }
-          receivedEvent = true;
-          await this.handleEvent(context, event);
+          if (receivedEvent) {
+            return;
+          }
+          failures += 1;
+          if (failures > this.maxRetries) {
+            await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
+            return;
+          }
+          await this.delay(this.retryDelayMs);
+          await this.recoverMissedSessionsAfterReconnect(context);
+        } catch {
+          await this.safeRender(context);
+          if (receivedEvent) {
+            failures = 0;
+          }
+          failures += 1;
+          if (failures > this.maxRetries) {
+            await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
+            return;
+          }
+          await this.delay(this.retryDelayMs);
+          await this.recoverMissedSessionsAfterReconnect(context);
         }
-        await this.render(context, true);
-        if (state.cancelled) {
-          return;
-        }
-        if (receivedEvent) {
-          return;
-        }
-        failures += 1;
-        if (failures > this.maxRetries) {
-          await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
-          return;
-        }
-        await this.delay(this.retryDelayMs);
-        await this.recoverMissedSessionsAfterReconnect(context);
-      } catch {
-        await this.safeRender(context);
-        if (receivedEvent) {
-          failures = 0;
-        }
-        failures += 1;
-        if (failures > this.maxRetries) {
-          await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
-          return;
-        }
-        await this.delay(this.retryDelayMs);
-        await this.recoverMissedSessionsAfterReconnect(context);
       }
+    } finally {
+      this.stopTyping(state);
+    }
+  }
+
+  private startTyping(thread: StreamThread, state: SubscriptionState, threadId: string, sessionId: string): void {
+    if (!thread.sendTyping || state.typingInterval !== undefined) {
+      return;
+    }
+
+    void this.safeSendTyping(thread, threadId, sessionId);
+    state.typingInterval = setInterval(() => {
+      void this.safeSendTyping(thread, threadId, sessionId);
+    }, TYPING_REFRESH_MS);
+  }
+
+  private stopTyping(state: SubscriptionState): void {
+    if (state.typingInterval !== undefined) {
+      clearInterval(state.typingInterval);
+      state.typingInterval = undefined;
+    }
+  }
+
+  private async safeSendTyping(thread: StreamThread, threadId: string, sessionId: string): Promise<void> {
+    try {
+      await thread.sendTyping?.();
+    } catch (error) {
+      logger.warn('Failed to refresh Discord typing indicator', { threadId, sessionId, error });
     }
   }
 
@@ -298,6 +333,7 @@ export class StreamHandler {
     sessionId: string,
     client: OpenCodeStreamClient,
     thread: StreamThread,
+    state: SubscriptionState,
     dedupeSet: Set<string> | undefined,
     projectPath: string | undefined,
   ) {
@@ -306,6 +342,7 @@ export class StreamHandler {
       sessionId,
       client,
       thread,
+      state,
       dedupeSet,
       projectPath,
       aggregate: '',
@@ -317,6 +354,7 @@ export class StreamHandler {
       lastRenderedContent: undefined as string | undefined,
       runningTools: new Map<string, string>(),
       tableDetected: false,
+      idleMessageId: undefined as string | undefined,
     };
   }
 
@@ -334,6 +372,8 @@ export class StreamHandler {
     if (payload.type === 'session.idle') {
       if (getSessionId(payload) === context.sessionId) {
         await this.render(context, true);
+        this.stopTyping(context.state);
+        context.idleMessageId = context.currentMessageId;
       }
       return;
     }
@@ -349,6 +389,9 @@ export class StreamHandler {
     }
 
     if (payload.type === 'message.part.delta') {
+      if (context.idleMessageId !== undefined && getMessageId(payload) === context.idleMessageId) {
+        return;
+      }
       await this.switchMessageContext(context, payload);
       await this.handleTextDelta(context, payload);
       return;
@@ -381,6 +424,7 @@ export class StreamHandler {
     }
 
     const partID = getPayloadString(payload, 'partID') ?? 'default';
+    this.startTyping(context.thread, context.state, context.threadId, context.sessionId);
     context.parts.set(partID, `${context.parts.get(partID) ?? ''}${delta}`);
     context.aggregate += delta;
 
@@ -472,6 +516,7 @@ export class StreamHandler {
       context.lastRenderedContent = undefined;
       context.runningTools.clear();
       context.tableDetected = false;
+      context.idleMessageId = undefined;
     }
 
     context.currentMessageId = messageId;

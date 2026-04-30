@@ -78,6 +78,28 @@ describe('CacheManager', () => {
     expect(manager.getMcpStatus(projectPath)).toEqual({ filesystem: { status: 'connected' } });
   });
 
+  it('filters cached sessions to the refreshed project path', async () => {
+    const cacheDir = createCacheDir();
+    cacheDirs.push(cacheDir);
+    const manager = new CacheManager({ cacheDir });
+    const client = createClient({
+      session: {
+        list: vi.fn(async () => [
+          { id: 'current-session', directory: projectPath },
+          { id: 'other-session', directory: '/tmp/other-project' },
+          { id: 'legacy-session' },
+        ]),
+      },
+    });
+
+    await manager.refresh(projectPath, client);
+
+    expect(manager.getSessions(projectPath)).toEqual([
+      { id: 'current-session', directory: projectPath },
+      { id: 'legacy-session' },
+    ]);
+  });
+
   it('persists refreshed cache to disk and loads it in a new manager', async () => {
     const cacheDir = createCacheDir();
     cacheDirs.push(cacheDir);

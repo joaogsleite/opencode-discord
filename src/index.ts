@@ -90,6 +90,7 @@ interface ServerManagerLike {
 
 interface CacheManagerLike {
   refresh(projectPath: string, client: unknown): Promise<void> | void;
+  getSessions?(projectPath: string): unknown[];
 }
 
 interface StreamHandlerLike {
@@ -138,7 +139,6 @@ export interface StartBotOptions {
   createClient?: (url: string) => unknown;
   healthCheck?: (client: unknown) => Promise<boolean> | boolean;
   killPid?: (pid: number) => void;
-  notifyThread?: (threadId: string, message: string) => Promise<void> | void;
   threadExists?: (threadId: string, session: SessionState) => Promise<boolean> | boolean;
   subscribeProjectEvents?: (projectPath: string, client: unknown) => Promise<void> | void;
   autoConnectSession?: (projectPath: string, session: unknown, client: unknown) => Promise<void> | void;
@@ -271,9 +271,6 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
   const sessionsSkippedDuringRecovery = await recoverSessions(stateManager, serverManager, streamHandler, {
     logger: asLifecycleLogger(startupLogger),
     recoveredClients,
-    notifyThread: options.notifyThread ?? (async (threadId, message) => {
-      await sendThreadNotice(threadResolver.getCached(threadId) ?? await threadResolver.fetch(threadId), message);
-    }),
     threadExists: options.threadExists ?? (async (threadId) => await threadResolver.fetch(threadId) !== undefined),
   });
   recoverQueues(stateManager);
@@ -290,9 +287,6 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
   await recoverSessions(stateManager, serverManager, streamHandler, {
     logger: asLifecycleLogger(startupLogger),
     recoveredClients,
-    notifyThread: options.notifyThread ?? (async (threadId, message) => {
-      await sendThreadNotice(threadResolver.getCached(threadId) ?? await threadResolver.fetch(threadId), message);
-    }),
     threadExists: options.threadExists ?? (async (threadId) => await threadResolver.fetch(threadId) !== undefined),
     threadIds: sessionsSkippedDuringRecovery,
   });
@@ -539,6 +533,14 @@ function createAutocompleteHandler(dependencies: RuntimeHandlerDependencies): Au
     }
 
     if (focused.name === 'session') {
+      const client = dependencies.serverManager.getClient(channelConfig.projectPath);
+      if (client !== undefined) {
+        try {
+          await dependencies.cacheManager.refresh(channelConfig.projectPath, client);
+        } catch {
+          // Autocomplete should degrade to the last cached sessions if refresh fails.
+        }
+      }
       return cacheManager.getSessions(channelConfig.projectPath)
         .map((session) => {
           const sessionId = getSessionId(session);
@@ -649,7 +651,6 @@ interface ServerRecoveryDependencies {
 interface SessionRecoveryDependencies {
   logger: Pick<Logger, 'warn'>;
   recoveredClients: Map<string, unknown>;
-  notifyThread?: (threadId: string, message: string) => Promise<void> | void;
   threadExists(threadId: string, session: SessionState): Promise<boolean> | boolean;
   threadIds?: Set<string>;
 }
@@ -739,9 +740,6 @@ async function recoverSessions(
     }, async () => {
       await streamHandler.subscribe(threadId, session.sessionId, client, undefined, session.projectPath);
     });
-    await warnOnFailure(dependencies.logger, 'Failed to post session recovery notice', { threadId }, async () => {
-      await dependencies.notifyThread?.(threadId, 'Bot restarted. Session reconnected.');
-    });
   }
 
   return skipped;
@@ -772,7 +770,7 @@ async function startAutoConnectProjects(
       await dependencies.subscribeProjectEvents(projectPath, client, dependencies.knownSessionIds);
     });
     await warnOnFailure(dependencies.logger, 'Failed to reconcile auto-connect sessions', { projectPath }, async () => {
-      const sessions = await listClientSessions(client);
+      const sessions = await listClientSessions(client, projectPath);
       for (const session of sessions) {
         const sessionId = getSessionId(session);
         if (sessionId === undefined || dependencies.knownSessionIds.has(sessionId)) {
@@ -838,6 +836,7 @@ function subscribeToProjectEvents(
 
           await autoConnectSession(projectPath, session, client, knownSessionIds);
         }
+        await reconcileAutoConnectSessions(projectPath, client, autoConnectSession, knownSessionIds, subscriptionLogger);
         return;
       } catch (error) {
         subscriptionLogger.warn('Auto-connect project event subscription failed', { projectPath, error });
@@ -855,7 +854,7 @@ async function reconcileAutoConnectSessions(
   reconciliationLogger: Pick<Logger, 'warn'>,
 ): Promise<void> {
   await warnOnFailure(reconciliationLogger, 'Failed to reconcile auto-connect sessions after event disconnect', { projectPath }, async () => {
-    const sessions = await listClientSessions(client);
+      const sessions = await listClientSessions(client, projectPath);
     for (const session of sessions) {
       const sessionId = getSessionId(session);
       if (sessionId === undefined || knownSessionIds.has(sessionId)) {
@@ -952,14 +951,24 @@ function getSessionTitle(session: unknown, sessionId: string): string {
   return sessionId;
 }
 
-async function listClientSessions(client: unknown): Promise<unknown[]> {
+async function listClientSessions(client: unknown, projectPath: string): Promise<unknown[]> {
   if (!isRecord(client) || !isRecord(client.session) || typeof client.session.list !== 'function') {
     return [];
   }
 
   const response = await client.session.list();
   const sessions = isRecord(response) && 'data' in response ? response.data : response;
-  return Array.isArray(sessions) ? sessions : [];
+  return Array.isArray(sessions) ? filterSessionsByProject(sessions, projectPath) : [];
+}
+
+function filterSessionsByProject(sessions: unknown[], projectPath: string): unknown[] {
+  return sessions.filter((session) => {
+    if (!isRecord(session) || typeof session.directory !== 'string') {
+      return true;
+    }
+
+    return session.directory === projectPath;
+  });
 }
 
 function getSessionId(session: unknown): string | undefined {

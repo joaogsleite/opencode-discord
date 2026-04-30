@@ -358,7 +358,7 @@ describe('auto-connect integration', () => {
     await flushAsync();
 
     expect(client.global.event).toHaveBeenCalledTimes(2);
-    expect(client.session.list).toHaveBeenCalledTimes(2);
+    expect(client.session.list).toHaveBeenCalledTimes(3);
     expect(parentChannel.threads.create).toHaveBeenCalledTimes(1);
     expect(state.sessions['thread-recovered']).toMatchObject({ sessionId: 'session-after-disconnect' });
   });

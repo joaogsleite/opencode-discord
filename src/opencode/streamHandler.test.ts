@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StreamHandler } from './streamHandler.js';
 import type { GlobalEventLike, OpenCodeStreamClient, StreamHandlerOptions, StreamMessage, StreamThread } from './streamHandler.js';
 
@@ -72,9 +72,10 @@ function textDelta(delta: string, partID = 'part-1', sessionID = 'session-1', me
   };
 }
 
-function createThread(): { thread: StreamThread; message: StreamMessage; edits: string[]; sends: string[] } {
+function createThread(): { thread: StreamThread; message: StreamMessage; edits: string[]; sends: string[]; typing: ReturnType<typeof vi.fn> } {
   const edits: string[] = [];
   const sends: string[] = [];
+  const typing = vi.fn(async () => undefined);
   const message: StreamMessage = {
     edit: vi.fn(async (content: string) => {
       edits.push(content);
@@ -85,9 +86,10 @@ function createThread(): { thread: StreamThread; message: StreamMessage; edits: 
       sends.push(content);
       return message;
     }),
+    sendTyping: typing,
   };
 
-  return { thread, message, edits, sends };
+  return { thread, message, edits, sends, typing };
 }
 
 function createClient(events: AsyncIterable<GlobalEventLike>[]): OpenCodeStreamClient {
@@ -122,6 +124,10 @@ function createHandler(options: Partial<StreamHandlerOptions> = {}, thread = cre
 }
 
 describe('StreamHandler', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('subscribes to client global events', async () => {
     const { thread } = createThread();
     const handler = createHandler({}, thread);
@@ -237,6 +243,21 @@ describe('StreamHandler', () => {
     await handler.waitForIdle('thread-1');
 
     expect(sends).toEqual(['new']);
+  });
+
+  it('stops Discord typing for the previous pump when subscribing a thread again', async () => {
+    vi.useFakeTimers();
+    const { thread, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const firstClient = createClient([neverEndingStream()]);
+    const secondClient = createClient([neverEndingStream()]);
+
+    await handler.subscribe('thread-1', 'session-1', firstClient);
+    await handler.subscribe('thread-1', 'session-1', secondClient);
+    handler.unsubscribe('thread-1');
+    await vi.advanceTimersByTimeAsync(9_000);
+
+    expect(typing).toHaveBeenCalledTimes(2);
   });
 
   it('tracks streamed message IDs in the provided dedupe set', async () => {
@@ -400,6 +421,39 @@ describe('StreamHandler', () => {
     expect(message.edit).toHaveBeenCalledWith('ABCD');
   });
 
+  it('keeps Discord typing active while a stream is open', async () => {
+    vi.useFakeTimers();
+    const { thread, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([neverEndingStream()]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+
+    expect(typing).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(9_000);
+
+    expect(typing).toHaveBeenCalledTimes(2);
+
+    handler.unsubscribe('thread-1');
+    await vi.advanceTimersByTimeAsync(9_000);
+
+    expect(typing).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues streaming when refreshing Discord typing fails', async () => {
+    const { thread, sends, typing } = createThread();
+    typing.mockRejectedValueOnce(new Error('typing unavailable'));
+    const handler = createHandler({}, thread);
+    const client = createClient([stream([textDelta('response')])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(typing).toHaveBeenCalledTimes(1);
+    expect(sends).toEqual(['response']);
+  });
+
   it('flushes final content when a finite stream ends before throttle elapses', async () => {
     const { thread, edits } = createThread();
     const times = [0, 100, 200];
@@ -428,6 +482,64 @@ describe('StreamHandler', () => {
     handler.unsubscribe('thread-1');
 
     expect(edits.at(-1)).toBe('AB');
+  });
+
+  it('stops Discord typing when the session becomes idle on a persistent stream', async () => {
+    vi.useFakeTimers();
+    const { thread, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const persistent = streamThenNever([
+      textDelta('A'),
+      { directory: '/repo', payload: { type: 'session.idle', sessionID: 'session-1' } },
+    ]);
+    const client = createClient([persistent.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
+    await vi.advanceTimersByTimeAsync(9_000);
+    handler.unsubscribe('thread-1');
+
+    expect(typing).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts Discord typing when new text arrives after an idle event', async () => {
+    vi.useFakeTimers();
+    const { thread, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const persistent = streamThenNever([
+      textDelta('A'),
+      { directory: '/repo', payload: { type: 'session.idle', sessionID: 'session-1' } },
+      textDelta('B'),
+    ]);
+    const client = createClient([persistent.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
+    await vi.advanceTimersByTimeAsync(9_000);
+    handler.unsubscribe('thread-1');
+
+    expect(typing).toHaveBeenCalledTimes(3);
+  });
+
+  it('ignores repeated deltas for a message that already became idle', async () => {
+    vi.useFakeTimers();
+    const { thread, typing, sends, edits } = createThread();
+    const handler = createHandler({}, thread);
+    const persistent = streamThenNever([
+      textDelta('A', 'part-1', 'session-1', 'message-1'),
+      { directory: '/repo', payload: { type: 'session.idle', sessionID: 'session-1' } },
+      textDelta('A', 'part-1', 'session-1', 'message-1'),
+    ]);
+    const client = createClient([persistent.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
+    await vi.advanceTimersByTimeAsync(9_000);
+    handler.unsubscribe('thread-1');
+
+    expect(sends).toEqual(['A']);
+    expect(edits).toEqual([]);
+    expect(typing).toHaveBeenCalledTimes(1);
   });
 
   it('retries when an SSE stream ends cleanly and consumes the next stream', async () => {

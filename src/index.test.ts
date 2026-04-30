@@ -462,6 +462,75 @@ describe('startBot', () => {
     expect(opencodeClient.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({ sessionID: 'session-new' }));
   });
 
+  it('refreshes sessions before returning /connect autocomplete choices', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const client = { session: { list: vi.fn(async () => [{ id: 'session-new', title: 'Recent session', directory: '/project/one' }]) } };
+    const cacheManager = {
+      refresh: vi.fn(async () => undefined),
+      getSessions: vi.fn(() => [{ id: 'session-new', title: 'Recent session', directory: '/project/one' }]),
+      getAgents: vi.fn(() => []),
+      getModels: vi.fn(() => []),
+      getMcpStatus: vi.fn(() => ({})),
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => state),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(() => client),
+      },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    const respond = vi.fn(async () => undefined);
+    await interactionListener?.({
+      id: 'interaction-1',
+      channelId: 'channel-1',
+      channel: null,
+      guildId: 'guild-1',
+      commandName: 'connect',
+      options: { getFocused: vi.fn(() => ({ name: 'session', value: '' })) },
+      isChatInputCommand: () => false,
+      isAutocomplete: () => true,
+      respond,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(cacheManager.refresh).toHaveBeenCalledWith('/project/one', client);
+    expect(respond).toHaveBeenCalledWith([{ name: 'Recent session', value: 'session-new' }]);
+  });
+
   it('remembers existing thread messages before resubscribing their stream', async () => {
     const calls: string[] = [];
     const session: SessionState = {
@@ -884,9 +953,6 @@ describe('startBot', () => {
       }),
       healthCheck: vi.fn(async (client) => client === clients.healthy),
       threadExists: vi.fn(() => true),
-      notifyThread: vi.fn(async (threadId, message) => {
-        calls.push(`notify:${threadId}:${message}`);
-      }),
       subscribeProjectEvents: vi.fn(async (projectPath, client) => {
         void client;
         calls.push(`project.subscribe:${projectPath}`);
@@ -902,7 +968,6 @@ describe('startBot', () => {
       'state.setServer:/project/dead:stopped',
       'discord.login:token',
       'stream.subscribe:thread-1:session-1:/project/healthy',
-      'notify:thread-1:Bot restarted. Session reconnected.',
       'state.clearQueue:thread-ended',
       'server.ensureRunning:/project/eager',
       'cache.refresh:/project/eager',
@@ -957,7 +1022,6 @@ describe('startBot', () => {
       clearQueue: vi.fn(),
     };
     const streamHandler = { subscribe: vi.fn() };
-    const notifyThread = vi.fn();
 
     await startBot({
       configLoader: {
@@ -981,13 +1045,11 @@ describe('startBot', () => {
       isPidAlive: vi.fn(() => true),
       createClient: vi.fn(() => client),
       healthCheck: vi.fn(() => true),
-      notifyThread,
       threadExists: vi.fn(() => false),
     });
 
     expect(stateManager.setSession).toHaveBeenCalledWith('thread-deleted', { ...session, status: 'ended' });
     expect(streamHandler.subscribe).not.toHaveBeenCalled();
-    expect(notifyThread).not.toHaveBeenCalled();
   });
 
   it('auto-connects only unattached sessions found during startup reconciliation', async () => {
@@ -1054,6 +1116,53 @@ describe('startBot', () => {
     expect(autoConnectSession).toHaveBeenCalledWith('/project/eager', newSession, client);
   });
 
+  it('does not auto-connect sessions from other projects during startup reconciliation', async () => {
+    const currentProjectSession = { id: 'current-session', directory: '/project/eager' };
+    const otherProjectSession = { id: 'other-session', directory: '/project/other' };
+    const client = {
+      session: {
+        list: vi.fn(async () => ({ data: [currentProjectSession, otherProjectSession] })),
+      },
+    };
+    const autoConnectSession = vi.fn();
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/eager', autoConnect: true }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => ({ version: 1, servers: {}, sessions: {}, queues: {} })),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(async () => client),
+        getClient: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => ({ login: vi.fn() })),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      autoConnectSession,
+    });
+
+    expect(autoConnectSession).toHaveBeenCalledOnce();
+    expect(autoConnectSession).toHaveBeenCalledWith('/project/eager', currentProjectSession, client);
+  });
+
   it('uses a healthy recovered server client for session recovery when ServerManager has no client', async () => {
     const server: ServerState = {
       port: 1234,
@@ -1082,7 +1191,6 @@ describe('startBot', () => {
     };
     const recoveredClient = { id: 'recovered-client' };
     const streamHandler = { subscribe: vi.fn() };
-    const notifyThread = vi.fn();
     const cacheManager = { refresh: vi.fn() };
 
     await startBot({
@@ -1123,12 +1231,10 @@ describe('startBot', () => {
       createClient: vi.fn(() => recoveredClient),
       healthCheck: vi.fn(() => true),
       threadExists: vi.fn(() => true),
-      notifyThread,
     });
 
     expect(cacheManager.refresh).toHaveBeenCalledWith('/project/recovered', recoveredClient);
     expect(streamHandler.subscribe).toHaveBeenCalledWith('thread-1', 'session-1', recoveredClient, undefined, '/project/recovered');
-    expect(notifyThread).toHaveBeenCalledWith('thread-1', 'Bot restarted. Session reconnected.');
   });
 
   it('registers healthy recovered server clients with ServerManager when supported', async () => {
@@ -1285,7 +1391,7 @@ describe('startBot', () => {
 
     expect(createStreamHandler).toHaveBeenCalledOnce();
     expect(streamHandler.subscribe).toHaveBeenCalledWith('thread-1', 'session-1', recoveredClient);
-    expect(thread.send).toHaveBeenCalledWith('Bot restarted. Session reconnected.');
+    expect(thread.send).not.toHaveBeenCalledWith('Bot restarted. Session reconnected.');
     expect(calls.indexOf('discord.login')).toBeLessThan(calls.indexOf('stream.subscribe:thread-1:session-1'));
   });
 
@@ -1415,6 +1521,55 @@ describe('startBot', () => {
     expect(client.global.event).toHaveBeenCalledOnce();
     expect(autoConnectSession).toHaveBeenCalledOnce();
     expect(autoConnectSession).toHaveBeenCalledWith('/project/eager', newSession, client);
+  });
+
+  it('reconciles auto-connect sessions when the project event stream ends cleanly', async () => {
+    async function* events(): AsyncIterable<unknown> {
+      return;
+    }
+    const missedSession = { id: 'missed-session', title: 'Created after stream ended', directory: '/project/eager' };
+    const client = {
+      global: { event: vi.fn(() => events()) },
+      session: { list: vi.fn(async () => [missedSession]) },
+    };
+    const autoConnectSession = vi.fn();
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/eager', autoConnect: true }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => ({ version: 1, servers: {}, sessions: {}, queues: {} })),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(async () => client),
+        getClient: vi.fn(),
+      },
+      cacheManager: { refresh: vi.fn() },
+      createDiscordClient: vi.fn(() => ({ login: vi.fn() })),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      autoConnectSession,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(client.global.event).toHaveBeenCalledOnce();
+    expect(client.session.list).toHaveBeenCalledTimes(2);
+    expect(autoConnectSession).toHaveBeenCalledWith('/project/eager', missedSession, client);
   });
 
   it('subscribes to SDK SSE result project event streams', async () => {
