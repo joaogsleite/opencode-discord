@@ -111,8 +111,10 @@ function createContext(
   configLoader: ConfigLoader,
 ): InteractionContext {
   const correlationId = generateCorrelationId(interaction.channelId ?? interaction.id);
-  const channel = interaction.channel as { parentId?: string | null } | null;
-  const channelId = channel?.parentId ?? interaction.channelId;
+  const channel = interaction.channel as { parentId?: string | null; isThread?: () => boolean } | null;
+  const channelId = channel?.isThread?.() === true
+    ? channel.parentId ?? interaction.channelId
+    : interaction.channelId;
   const channelConfig = interaction.guildId
     ? configLoader.getChannelConfig(interaction.guildId, channelId)
     : undefined;
