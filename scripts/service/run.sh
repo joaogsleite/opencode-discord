@@ -17,6 +17,12 @@ fi
 cd "${REPO_ROOT}"
 source "${NVM_SCRIPT}"
 nvm use
+export PATH="${HOME}/.opencode/bin:${PATH}"
+
+if ! command -v opencode >/dev/null 2>&1; then
+  printf 'Missing opencode CLI. Install it or ensure %s/.opencode/bin is available.\n' "${HOME}" >&2
+  exit 1
+fi
 
 if [[ ! -x "./node_modules/.bin/tsx" ]]; then
   printf 'Missing ./node_modules/.bin/tsx. Run pnpm install first.\n' >&2
