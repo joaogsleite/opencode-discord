@@ -249,11 +249,15 @@ describe('StreamHandler', () => {
     vi.useFakeTimers();
     const { thread, typing } = createThread();
     const handler = createHandler({}, thread);
-    const firstClient = createClient([neverEndingStream()]);
-    const secondClient = createClient([neverEndingStream()]);
+    const firstStream = streamThenNever([textDelta('first')]);
+    const secondStream = streamThenNever([textDelta('second')]);
+    const firstClient = createClient([firstStream.iterable]);
+    const secondClient = createClient([secondStream.iterable]);
 
     await handler.subscribe('thread-1', 'session-1', firstClient);
+    await firstStream.drained;
     await handler.subscribe('thread-1', 'session-1', secondClient);
+    await secondStream.drained;
     handler.unsubscribe('thread-1');
     await vi.advanceTimersByTimeAsync(9_000);
 
@@ -421,13 +425,15 @@ describe('StreamHandler', () => {
     expect(message.edit).toHaveBeenCalledWith('ABCD');
   });
 
-  it('keeps Discord typing active while a stream is open', async () => {
+  it('keeps Discord typing active while matching stream activity is in progress', async () => {
     vi.useFakeTimers();
     const { thread, typing } = createThread();
     const handler = createHandler({}, thread);
-    const client = createClient([neverEndingStream()]);
+    const persistent = streamThenNever([textDelta('A')]);
+    const client = createClient([persistent.iterable]);
 
     await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
 
     expect(typing).toHaveBeenCalledTimes(1);
 
@@ -439,6 +445,19 @@ describe('StreamHandler', () => {
     await vi.advanceTimersByTimeAsync(9_000);
 
     expect(typing).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not start Discord typing until matching stream activity arrives', async () => {
+    vi.useFakeTimers();
+    const { thread, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([neverEndingStream()]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await vi.advanceTimersByTimeAsync(9_000);
+    handler.unsubscribe('thread-1');
+
+    expect(typing).not.toHaveBeenCalled();
   });
 
   it('continues streaming when refreshing Discord typing fails', async () => {

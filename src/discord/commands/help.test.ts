@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createHelpCommandHandler } from './help.js';
 
@@ -8,7 +8,7 @@ describe('createHelpCommandHandler', () => {
 
     await createHelpCommandHandler()(interaction, { correlationId: 'corr-1', channelConfig: { channelId: 'channel-1', projectPath: '/repo' } });
 
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true, content: expect.stringContaining('/new') }));
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ flags: MessageFlags.Ephemeral, content: expect.stringContaining('/new') }));
     expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('/status') }));
   });
 
@@ -17,7 +17,7 @@ describe('createHelpCommandHandler', () => {
 
     await createHelpCommandHandler()(interaction, { correlationId: 'corr-1', channelConfig: { channelId: 'channel-1', projectPath: '/repo' } });
 
-    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true, content: expect.stringContaining('/agent set') }));
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ flags: MessageFlags.Ephemeral, content: expect.stringContaining('/agent set') }));
     expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('/end') }));
   });
 });

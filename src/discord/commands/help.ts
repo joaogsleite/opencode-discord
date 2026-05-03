@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 
 interface InteractionContext {
@@ -19,6 +19,6 @@ export function createHelpCommandHandler(): CommandHandler {
       ? ['`/agent set` change this thread agent', '`/agent list` list agents', '`/model set` change this thread model', '`/model list` list models', '`/info` show session details', '`/end` end this session']
       : ['`/new` start a session', '`/connect` attach an existing session', '`/agent list` list agents', '`/model list` list models', '`/status` show channel status'];
 
-    await interaction.reply({ content: commands.join('\n'), ephemeral: true });
+    await interaction.reply({ content: commands.join('\n'), flags: MessageFlags.Ephemeral });
   };
 }

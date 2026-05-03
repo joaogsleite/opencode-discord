@@ -5,6 +5,7 @@ import type {
   Interaction,
   InteractionReplyOptions,
 } from 'discord.js';
+import { MessageFlags } from 'discord.js';
 import type { ConfigLoader } from '../../config/loader.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
@@ -127,7 +128,7 @@ async function sendError(
   const content = err instanceof BotError
     ? `**Error:** ${err.message} *(ref: ${correlationId})*`
     : `**Unexpected error** *(ref: ${correlationId})*`;
-  const options: InteractionReplyOptions = { content, ephemeral: true };
+  const options: InteractionReplyOptions = { content, flags: MessageFlags.Ephemeral };
 
   if (err instanceof BotError) {
     logger.warn(err.message, { code: err.code, correlationId, ...err.context });

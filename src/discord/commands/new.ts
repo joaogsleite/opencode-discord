@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
@@ -49,7 +49,7 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
     }
 
     const channel = requireThreadCreatableChannel(interaction);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const client = requireOpencodeClient(await deps.serverManager.ensureRunning(channelConfig.projectPath), channelConfig.projectPath);
     const thread = await channel.threads.create({ name: title, autoArchiveDuration: 1440, reason: 'OpenCode session' });
     deps.rememberThread?.(thread.id, thread);

@@ -1,6 +1,6 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type ChatInputCommandInteraction } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 
@@ -183,7 +183,7 @@ async function confirmResetHard(interaction: ChatInputCommandInteraction, deps: 
 
   collector?.on('collect', async (componentInteraction) => {
     if (componentInteraction.user?.id !== interaction.user.id) {
-      await componentInteraction.reply({ content: 'Only the user who requested this reset can confirm it.', ephemeral: true });
+      await componentInteraction.reply({ content: 'Only the user who requested this reset can confirm it.', flags: MessageFlags.Ephemeral });
       return;
     }
 

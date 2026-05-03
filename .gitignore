@@ -6,3 +6,4 @@ state.json
 .worktrees/
 .env
 *.log
+logs/

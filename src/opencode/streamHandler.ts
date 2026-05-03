@@ -255,7 +255,6 @@ export class StreamHandler {
   ): Promise<void> {
     const context = this.createContext(threadId, sessionId, client, thread, state, dedupeSet, projectPath);
     let failures = 0;
-    this.startTyping(thread, state, threadId, sessionId);
 
     try {
       while (!state.cancelled) {

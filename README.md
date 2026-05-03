@@ -167,6 +167,7 @@ Thread-level flow:
 | `config.yaml` | Local bot configuration and Discord token. Ignored by git. |
 | `state.json` | Persisted server, session, and queue state. Ignored by git. |
 | `.cache/` | Cached agents, models, sessions, and MCP status. Ignored by git. |
+| `logs/` | LaunchAgent stdout and stderr logs. Ignored by git. |
 | `<project>/.opencode/attachments/` | Downloaded Discord attachments for prompt file parts. |
 
 ## Development
@@ -179,12 +180,29 @@ Useful scripts:
 | `pnpm test` | Run Vitest once. |
 | `pnpm test:watch` | Run Vitest in watch mode. |
 | `pnpm typecheck` | Run TypeScript without emitting files. |
+| `pnpm service:setup` | Install/update the macOS LaunchAgent and start the bot at user login. |
+| `pnpm service:status` | Print LaunchAgent status for `com.opencode.discord`. |
+| `pnpm service:stop` | Stop the running LaunchAgent-managed process without removing auto-start. |
+| `pnpm service:restart` | Restart the LaunchAgent-managed process. |
+| `pnpm service:unsetup` | Stop, unload, and remove the macOS LaunchAgent. |
 
 Project conventions are documented in `AGENTS.md`. The short version is strict TypeScript, named exports, Zod config validation, `BotError` for structured errors, atomic state writes, and TDD for code changes.
 
 ## Operational Notes
 
 The bot manages `opencode serve` processes itself. It starts servers on demand, shares one server per project path, watches health, and persists process metadata in `state.json`.
+
+ macOS background service management is available through `pnpm service:*` scripts. The service starts when the current macOS user logs in, selects the Node.js version from `.nvmrc` through `nvm`, runs `./node_modules/.bin/tsx src/index.ts` from this repository, and writes logs to `logs/opencode-discord.out.log` and `logs/opencode-discord.err.log`.
+
+ Before enabling the service, install the `.nvmrc` Node.js version and project dependencies manually:
+
+ ```bash
+ nvm install
+ nvm use
+ pnpm install
+ ```
+
+ The service does not run `npm`, `pnpm`, `corepack`, or `nvm install` at startup. If Node.js or `node_modules` is missing, check `logs/opencode-discord.err.log`, install the missing dependency manually, and run `pnpm service:restart`.
 
 For production-like use:
 

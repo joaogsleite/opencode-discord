@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChannelConfig } from '../../config/types.js';
 import type { BotState } from '../../state/types.js';
@@ -46,7 +46,7 @@ describe('createConnectCommandHandler', () => {
 
     await createConnectCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
 
-    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(deps.serverManager.ensureRunning).toHaveBeenCalledWith('/repo');
     expect(channel.threads.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Existing session' }));
     expect(deps.sessionBridge.connectToSession).toHaveBeenCalledWith(expect.objectContaining({

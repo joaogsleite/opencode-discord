@@ -1,4 +1,4 @@
-import type { ApplicationCommandOptionChoiceData, AutocompleteInteraction, ChatInputCommandInteraction, Interaction } from 'discord.js';
+import { MessageFlags, type ApplicationCommandOptionChoiceData, type AutocompleteInteraction, type ChatInputCommandInteraction, type Interaction } from 'discord.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigLoader } from '../../config/loader.js';
 import type { ChannelConfig } from '../../config/types.js';
@@ -112,7 +112,7 @@ describe('handleInteraction', () => {
     expect(commandHandler).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
       content: expect.stringMatching(/Unknown command.*ref: channel-1-\d+/),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   });
 
@@ -134,7 +134,7 @@ describe('handleInteraction', () => {
     expect(commandHandler).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
       content: expect.stringMatching(/not allowed.*ref: channel-1-\d+/i),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   });
 
@@ -169,7 +169,7 @@ describe('handleInteraction', () => {
     expect(commandHandler).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
       content: expect.stringMatching(/not allowed.*ref: thread-1-\d+/i),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   });
 
@@ -188,7 +188,7 @@ describe('handleInteraction', () => {
 
     expect(interaction.followUp).toHaveBeenCalledWith({
       content: expect.stringMatching(/Deferred failure.*ref: channel-1-\d+/),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     expect(interaction.editReply).not.toHaveBeenCalled();
   });

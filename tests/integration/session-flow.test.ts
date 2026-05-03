@@ -1,3 +1,4 @@
+import { MessageFlags } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createNewCommandHandler } from '../../src/discord/commands/new.js';
 import { createConnectCommandHandler } from '../../src/discord/commands/connect.js';
@@ -171,7 +172,7 @@ describe('session flow integration', () => {
 
     expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
       content: expect.stringContaining('You are not allowed to use this bot in this channel.'),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     }));
     expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('ref:') }));
   });
@@ -197,7 +198,7 @@ describe('session flow integration', () => {
     expect(interaction.channel.threads.create).not.toHaveBeenCalled();
     expect(interaction.followUp).toHaveBeenCalledWith(expect.objectContaining({
       content: expect.stringContaining('OpenCode server is unavailable for this project.'),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     }));
     expect(interaction.followUp).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('ref:') }));
     expect(state.sessions).toEqual({});

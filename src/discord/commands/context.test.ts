@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChannelConfig } from '../../config/types.js';
 import { ErrorCode } from '../../utils/errors.js';
@@ -62,7 +62,7 @@ describe('createContextCommandHandler', () => {
 
     expect(deps.resolveSafePath).toHaveBeenCalledWith('/repo', 'src/a.ts');
     expect(deps.buffer.list('thread-1')).toEqual(['/repo/src/a.ts', '/repo/src/b.ts']);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Added to context:\n`/repo/src/a.ts`\n`/repo/src/b.ts`', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Added to context:\n`/repo/src/a.ts`\n`/repo/src/b.ts`', flags: MessageFlags.Ephemeral });
   });
 
   it('bounds long add confirmations with a truncation marker', async () => {
@@ -72,7 +72,7 @@ describe('createContextCommandHandler', () => {
 
     await createContextCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
 
-    const reply = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { content: string; ephemeral: boolean };
+    const reply = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { content: string; flags: MessageFlags };
     expect(reply.content.length).toBeLessThanOrEqual(1800);
     expect(reply.content).toContain('... truncated');
   });
@@ -95,7 +95,7 @@ describe('createContextCommandHandler', () => {
 
     await createContextCommandHandler(createDeps(buffer))(interaction, { correlationId: 'corr-1', channelConfig });
 
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Context buffer:\n`/repo/src/a.ts`', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Context buffer:\n`/repo/src/a.ts`', flags: MessageFlags.Ephemeral });
   });
 
   it('bounds long list responses with a truncation marker', async () => {
@@ -105,7 +105,7 @@ describe('createContextCommandHandler', () => {
 
     await createContextCommandHandler(createDeps(buffer))(interaction, { correlationId: 'corr-1', channelConfig });
 
-    const reply = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { content: string; ephemeral: boolean };
+    const reply = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { content: string; flags: MessageFlags };
     expect(reply.content.length).toBeLessThanOrEqual(1800);
     expect(reply.content).toContain('... truncated');
   });
@@ -118,6 +118,6 @@ describe('createContextCommandHandler', () => {
     await createContextCommandHandler(createDeps(buffer))(interaction, { correlationId: 'corr-1', channelConfig });
 
     expect(buffer.list('thread-1')).toEqual([]);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Context buffer cleared.', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Context buffer cleared.', flags: MessageFlags.Ephemeral });
   });
 });

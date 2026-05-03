@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChannelConfig } from '../../config/types.js';
 import { ErrorCode } from '../../utils/errors.js';
@@ -98,7 +98,7 @@ describe('createGitCommandHandler', () => {
     await handlers.get('collect')?.(componentInteraction);
 
     expect(deps.execFile).not.toHaveBeenCalled();
-    expect(componentInteraction.reply).toHaveBeenCalledWith({ content: 'Only the user who requested this reset can confirm it.', ephemeral: true });
+    expect(componentInteraction.reply).toHaveBeenCalledWith({ content: 'Only the user who requested this reset can confirm it.', flags: MessageFlags.Ephemeral });
     expect(componentInteraction.update).not.toHaveBeenCalled();
   });
 

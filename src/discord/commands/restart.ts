@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type ChatInputCommandInteraction } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { BotState, SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
@@ -46,7 +46,7 @@ export function createRestartCommandHandler(deps: RestartCommandDependencies): C
 
     collector?.on('collect', async (componentInteraction) => {
       if (componentInteraction.user?.id !== interaction.user.id) {
-        await componentInteraction.reply({ content: 'Only the user who requested this restart can confirm it.', ephemeral: true });
+        await componentInteraction.reply({ content: 'Only the user who requested this restart can confirm it.', flags: MessageFlags.Ephemeral });
         return;
       }
       if (componentInteraction.customId !== 'restart-confirm') return;

@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import type { BotState } from '../../state/types.js';
@@ -46,7 +46,7 @@ export function createConnectCommandHandler(deps: ConnectCommandDependencies): C
 
     const channel = requireThreadCreatableChannel(interaction);
     const title = normalizeTitle(interaction.options.getString('title'), sessionId);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const client = await deps.serverManager.ensureRunning(channelConfig.projectPath) as OpencodeSessionClient;
     const thread = await channel.threads.create({ name: title, autoArchiveDuration: 1440, reason: 'OpenCode session attach' });
 

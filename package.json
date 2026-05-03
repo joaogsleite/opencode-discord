@@ -9,7 +9,12 @@
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "service:setup": "bash scripts/service/setup.sh",
+    "service:stop": "bash scripts/service/stop.sh",
+    "service:restart": "bash scripts/service/restart.sh",
+    "service:unsetup": "bash scripts/service/unsetup.sh",
+    "service:status": "bash scripts/service/status.sh"
   },
   "keywords": [],
   "author": "",

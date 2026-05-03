@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { MessageFlags } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { isDirectEntrypoint, runCli, startBot } from './index.js';
 import type { BotState, ServerState, SessionState } from './state/types.js';
@@ -357,7 +358,7 @@ describe('startBot', () => {
       followUp: vi.fn(),
     });
 
-    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ flags: MessageFlags.Ephemeral }));
   });
 
   it('remembers /new threads before subscribing their stream', async () => {
