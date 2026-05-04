@@ -10,6 +10,7 @@ LOG_DIR="${REPO_ROOT}/logs"
 STDOUT_LOG="${LOG_DIR}/opencode-discord.out.log"
 STDERR_LOG="${LOG_DIR}/opencode-discord.err.log"
 RUN_SCRIPT="${SCRIPT_DIR}/run.sh"
+LAUNCHD_ENTRYPOINT="${SCRIPT_DIR}/entrypoint.sh"
 LAUNCHCTL_DOMAIN="gui/$(id -u)"
 LAUNCHCTL_TARGET="${LAUNCHCTL_DOMAIN}/${SERVICE_LABEL}"
 
@@ -27,6 +28,22 @@ require_command() {
     printf 'Required command not found: %s\n' "${command_name}" >&2
     exit 1
   fi
+}
+
+detect_login_shell() {
+  if [[ -n "${SHELL:-}" && -x "${SHELL}" ]]; then
+    printf '%s\n' "${SHELL}"
+    return 0
+  fi
+
+  case "$(uname -s)" in
+    Darwin)
+      dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | awk '{print $2}' || true
+      ;;
+    Linux)
+      getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7 || true
+      ;;
+  esac
 }
 
 is_bootstrapped() {

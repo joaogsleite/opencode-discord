@@ -20,7 +20,7 @@ cat >"${PLIST_PATH}" <<PLIST
 
   <key>ProgramArguments</key>
   <array>
-    <string>${RUN_SCRIPT}</string>
+    <string>${LAUNCHD_ENTRYPOINT}</string>
   </array>
 
   <key>WorkingDirectory</key>

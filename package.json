@@ -10,11 +10,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "service:setup": "bash scripts/service/setup.sh",
-    "service:stop": "bash scripts/service/stop.sh",
-    "service:restart": "bash scripts/service/restart.sh",
-    "service:unsetup": "bash scripts/service/unsetup.sh",
-    "service:status": "bash scripts/service/status.sh"
+    "service:setup": "bash scripts/setup.sh",
+    "service:stop": "bash scripts/stop.sh",
+    "service:restart": "bash scripts/restart.sh",
+    "service:unsetup": "bash scripts/unsetup.sh",
+    "service:status": "bash scripts/status.sh"
   },
   "keywords": [],
   "author": "",
