@@ -4,7 +4,7 @@ set -euo pipefail
 SERVICE_LABEL="com.opencode.discord"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${REPO_ROOT}/logs"
 STDOUT_LOG="${LOG_DIR}/out.log"
 STDERR_LOG="${LOG_DIR}/err.log"
