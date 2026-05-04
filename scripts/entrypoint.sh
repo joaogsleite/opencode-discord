@@ -12,7 +12,6 @@ if [[ -z "${LOGIN_SHELL}" || ! -x "${LOGIN_SHELL}" ]]; then
 fi
 
 exec "${LOGIN_SHELL}" -lc "
-  source ${SCRIPT_DIR}/lib.sh
   cd ${REPO_ROOT}
   if command -v nvm >/dev/null 2>&1 ; then
     nvm use
