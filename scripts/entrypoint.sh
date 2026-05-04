@@ -18,7 +18,7 @@ exec "${LOGIN_SHELL}" -lc "
     echo 'Missing opencode CLI'
     exit 1
   fi
-  if ! -f ./node_modules/.bin/tsx ; then
+  if ! test ./node_modules/.bin/tsx ; then
     echo 'Missing ./node_modules/.bin/tsx. Run pnpm install first.'
     exit 1
   fi
