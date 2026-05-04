@@ -21,6 +21,8 @@ interface MessageWithCollector {
   edit(options: unknown): Promise<unknown>;
 }
 
+const MAX_ERROR_DETAILS_LENGTH = 1600;
+
 /** Dependencies for the /git command handler. */
 export interface GitCommandDependencies {
   execFile(file: string, args: string[], options: { cwd: string }): Promise<ExecResult>;
@@ -88,7 +90,21 @@ function mapGitError(error: unknown): BotError {
     return new BotError(ErrorCode.GIT_CONFLICT, 'Git operation reported conflicts.', { stderr });
   }
 
-  return new BotError(ErrorCode.DISCORD_API_ERROR, 'Git command failed.', { stderr: stderr || getErrorMessage(error) });
+  const details = stderr || getErrorMessage(error);
+  return new BotError(ErrorCode.DISCORD_API_ERROR, formatGitErrorMessage(details), { stderr: details });
+}
+
+function formatGitErrorMessage(details: string): string {
+  const trimmed = details.trim();
+  if (!trimmed) {
+    return 'Git command failed.';
+  }
+
+  return `Git command failed.\n\`\`\`\n${truncateGitErrorDetails(trimmed)}\n\`\`\``;
+}
+
+function truncateGitErrorDetails(details: string): string {
+  return details.length > MAX_ERROR_DETAILS_LENGTH ? `${details.slice(0, MAX_ERROR_DETAILS_LENGTH)}\n... truncated` : details;
 }
 
 function getErrorStderr(error: unknown): string {

@@ -13,7 +13,7 @@ function createConfigLoader(channelConfig?: ChannelConfig): ConfigLoader {
 
 interface CommandInteractionOptions {
   channelId?: string;
-  channel?: { parentId?: string | null };
+  channel?: { parentId?: string | null; isThread?: () => boolean };
   deferred?: boolean;
 }
 
@@ -155,7 +155,7 @@ describe('handleInteraction', () => {
     } as unknown as ConfigLoader;
     const interaction = createCommandInteraction('new', 'blocked-user', {
       channelId: 'thread-1',
-      channel: { parentId: 'channel-1' },
+      channel: { parentId: 'channel-1', isThread: () => true },
     });
     const commandHandler = vi.fn<CommandHandler>();
 
@@ -171,6 +171,50 @@ describe('handleInteraction', () => {
       content: expect.stringMatching(/not allowed.*ref: thread-1-\d+/i),
       flags: MessageFlags.Ephemeral,
     });
+  });
+
+  it('looks up text channel config by channel ID when the channel is inside a category', async () => {
+    const channelConfig: ChannelConfig = { channelId: 'channel-1', projectPath: '/project' };
+    const configLoader = createConfigLoader(channelConfig);
+    const commandHandler = vi.fn<CommandHandler>();
+    const interaction = createCommandInteraction('new', 'user-1', {
+      channelId: 'channel-1',
+      channel: { parentId: 'category-1', isThread: () => false },
+    });
+
+    await handleInteraction(interaction, {
+      configLoader,
+      commandHandlers: new Map([['new', commandHandler]]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(configLoader.getChannelConfig).toHaveBeenCalledWith('guild-1', 'channel-1');
+    expect(commandHandler).toHaveBeenCalledWith(
+      interaction,
+      expect.objectContaining({ channelConfig }),
+    );
+  });
+
+  it('looks up thread command config by parent channel ID', async () => {
+    const channelConfig: ChannelConfig = { channelId: 'channel-1', projectPath: '/project' };
+    const configLoader = createConfigLoader(channelConfig);
+    const commandHandler = vi.fn<CommandHandler>();
+    const interaction = createCommandInteraction('new', 'user-1', {
+      channelId: 'thread-1',
+      channel: { parentId: 'channel-1', isThread: () => true },
+    });
+
+    await handleInteraction(interaction, {
+      configLoader,
+      commandHandlers: new Map([['new', commandHandler]]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(configLoader.getChannelConfig).toHaveBeenCalledWith('guild-1', 'channel-1');
+    expect(commandHandler).toHaveBeenCalledWith(
+      interaction,
+      expect.objectContaining({ channelConfig }),
+    );
   });
 
   it('sends deferred command errors as ephemeral follow-up messages', async () => {

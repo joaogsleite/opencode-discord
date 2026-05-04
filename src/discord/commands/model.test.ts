@@ -50,6 +50,14 @@ describe('createModelCommandHandler', () => {
     expect(deps.stateManager.setSession).toHaveBeenCalledWith('thread-1', { ...session, model: 'anthropic/claude' });
   });
 
+  it('validates models from object-mapped provider metadata', async () => {
+    const deps = createDeps([{ id: 'github-copilot', models: { 'gpt-5.5': { id: 'gpt-5.5' } } }]);
+
+    await createModelCommandHandler(deps)(createInteraction('set', 'github-copilot/gpt-5.5'), { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.stateManager.setSession).toHaveBeenCalledWith('thread-1', { ...session, model: 'github-copilot/gpt-5.5' });
+  });
+
   it('defers model set before starting server/cache validation work', async () => {
     const events: string[] = [];
     const deps = createDeps();
@@ -80,6 +88,15 @@ describe('createModelCommandHandler', () => {
 
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.objectContaining({ data: expect.objectContaining({ title: 'Available Models' }) })] }));
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.objectContaining({ data: expect.objectContaining({ fields: expect.arrayContaining([expect.objectContaining({ name: 'anthropic' })]) }) })] }));
+  });
+
+  it('lists models from object-mapped provider metadata', async () => {
+    const deps = createDeps([{ id: 'github-copilot', models: { 'gpt-5.5': { id: 'gpt-5.5' } } }]);
+    const interaction = createInteraction('list');
+
+    await createModelCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.objectContaining({ data: expect.objectContaining({ fields: expect.arrayContaining([expect.objectContaining({ value: expect.stringContaining('github-copilot/gpt-5.5') })]) }) })] }));
   });
 
   it('defers model list before starting server/cache work', async () => {

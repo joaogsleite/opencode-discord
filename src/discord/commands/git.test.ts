@@ -67,6 +67,7 @@ describe('createGitCommandHandler', () => {
 
     await expect(createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig })).rejects.toMatchObject({
       code: ErrorCode.DISCORD_API_ERROR,
+      message: expect.stringContaining('fatal: not a git repository'),
     });
   });
 
@@ -128,6 +129,7 @@ describe('createGitCommandHandler', () => {
 
     await expect(createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig })).rejects.toMatchObject({
       code: ErrorCode.DISCORD_API_ERROR,
+      message: expect.stringContaining('fatal: not a git repository'),
     });
   });
 

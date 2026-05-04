@@ -2,6 +2,7 @@ import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeCacheClient } from '../../opencode/cache.js';
 import type { CacheManager } from '../../opencode/cache.js';
+import { getProviderId, getProviderModelIds, listModelIds } from '../../opencode/modelIds.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 
@@ -134,41 +135,6 @@ function requireSession(session: SessionState | undefined, threadId: string): Se
   }
 
   return session;
-}
-
-function listModelIds(providers: unknown[]): string[] {
-  return providers.flatMap((provider) => getProviderModelIds(provider));
-}
-
-function getProviderId(provider: unknown): string | undefined {
-  if (!provider || typeof provider !== 'object') {
-    return undefined;
-  }
-
-  const record = provider as Record<string, unknown>;
-  return typeof record.id === 'string' ? record.id : typeof record.name === 'string' ? record.name : undefined;
-}
-
-function getProviderModelIds(provider: unknown): string[] {
-  const providerId = getProviderId(provider);
-  if (!provider || typeof provider !== 'object' || !providerId) {
-    return [];
-  }
-
-  const record = provider as Record<string, unknown>;
-  const models = Array.isArray(record.models) ? record.models : [];
-  return models.map((model) => {
-    if (typeof model === 'string') {
-      return `${providerId}/${model}`;
-    }
-
-    if (model && typeof model === 'object') {
-      const modelId = (model as Record<string, unknown>).id;
-      return typeof modelId === 'string' ? `${providerId}/${modelId}` : undefined;
-    }
-
-    return undefined;
-  }).filter((model): model is string => Boolean(model));
 }
 
 function formatModelField(models: string[]): string {

@@ -38,6 +38,7 @@ import { handleInteraction } from './discord/handlers/interactionHandler.js';
 import type { AutocompleteHandler, CommandHandler } from './discord/handlers/interactionHandler.js';
 import { handleMessageCreate } from './discord/handlers/messageHandler.js';
 import { CacheManager } from './opencode/cache.js';
+import { listModelIds } from './opencode/modelIds.js';
 import { PermissionHandler, type PermissionThread } from './opencode/permissionHandler.js';
 import { QuestionHandler, type QuestionThread } from './opencode/questionHandler.js';
 import { ServerManager } from './opencode/serverManager.js';
@@ -526,7 +527,7 @@ function createAutocompleteHandler(dependencies: RuntimeHandlerDependencies): Au
     }
 
     if (focused.name === 'model') {
-      return listCachedModelIds(cacheManager.getModels(channelConfig.projectPath))
+      return listModelIds(cacheManager.getModels(channelConfig.projectPath))
         .filter((model) => model.toLowerCase().includes(value.toLowerCase()))
         .slice(0, 25)
         .map((model) => ({ name: model, value: model }));
@@ -580,22 +581,6 @@ function getAutocompleteName(value: unknown): string | undefined {
     return undefined;
   }
   return typeof value.name === 'string' ? value.name : typeof value.id === 'string' ? value.id : undefined;
-}
-
-function listCachedModelIds(providers: unknown[]): string[] {
-  return providers.flatMap((provider) => {
-    const providerId = getAutocompleteName(provider);
-    const models = isRecord(provider) && Array.isArray(provider.models) ? provider.models : [];
-    return providerId === undefined ? [] : models.map((model) => {
-      if (typeof model === 'string') {
-        return `${providerId}/${model}`;
-      }
-      if (isRecord(model) && typeof model.id === 'string') {
-        return `${providerId}/${model.id}`;
-      }
-      return undefined;
-    }).filter((model): model is string => Boolean(model));
-  });
 }
 
 async function getPathAutocompleteChoices(projectPath: string, value: string): Promise<Array<{ name: string; value: string }>> {

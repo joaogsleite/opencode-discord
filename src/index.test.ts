@@ -532,6 +532,73 @@ describe('startBot', () => {
     expect(respond).toHaveBeenCalledWith([{ name: 'Recent session', value: 'session-new' }]);
   });
 
+  it('returns model autocomplete choices from object-mapped provider metadata', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const cacheManager = {
+      refresh: vi.fn(async () => undefined),
+      getSessions: vi.fn(() => []),
+      getAgents: vi.fn(() => []),
+      getModels: vi.fn(() => [{ id: 'github-copilot', models: { 'gpt-5.5': { id: 'gpt-5.5' } } }]),
+      getMcpStatus: vi.fn(() => ({})),
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => state),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(),
+      },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    const respond = vi.fn(async () => undefined);
+    await interactionListener?.({
+      id: 'interaction-1',
+      channelId: 'channel-1',
+      channel: null,
+      guildId: 'guild-1',
+      commandName: 'model',
+      options: { getFocused: vi.fn(() => ({ name: 'model', value: 'gpt' })) },
+      isChatInputCommand: () => false,
+      isAutocomplete: () => true,
+      respond,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(respond).toHaveBeenCalledWith([{ name: 'github-copilot/gpt-5.5', value: 'github-copilot/gpt-5.5' }]);
+  });
+
   it('remembers existing thread messages before resubscribing their stream', async () => {
     const calls: string[] = [];
     const session: SessionState = {
