@@ -38,6 +38,7 @@ import { handleInteraction } from './discord/handlers/interactionHandler.js';
 import type { AutocompleteHandler, CommandHandler } from './discord/handlers/interactionHandler.js';
 import { handleMessageCreate } from './discord/handlers/messageHandler.js';
 import { CacheManager } from './opencode/cache.js';
+import { listSelectableAgentIds } from './opencode/agentIds.js';
 import { listModelIds } from './opencode/modelIds.js';
 import { PermissionHandler, type PermissionThread } from './opencode/permissionHandler.js';
 import { QuestionHandler, type QuestionThread } from './opencode/questionHandler.js';
@@ -149,7 +150,7 @@ export interface StartBotOptions {
   clearInterval?: LifecycleHandlerOptions['clearInterval'];
   exit?: LifecycleHandlerOptions['exit'];
   now?: () => number;
-  logger?: Pick<Logger, 'warn' | 'error'>;
+  logger?: Pick<Logger, 'info' | 'warn' | 'error'>;
 }
 
 /** Runtime objects created or used during bot startup. */
@@ -260,6 +261,7 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
   const sessionBridge = options.sessionBridge ?? new SessionBridge({ stateManager, streamSubscriber: asSessionStreamSubscriber(streamHandler) });
   const contextBuffer = new ContextBuffer();
 
+  startupLogger.info('Recovering OpenCode servers');
   const recoveredClients = await recoverServers(stateManager, cacheManager, {
     createClient: options.createClient ?? ((url) => createOpencodeClient({ baseUrl: url })),
     healthCheck: options.healthCheck ?? defaultHealthCheck,
@@ -268,7 +270,7 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
     logger: asLifecycleLogger(startupLogger),
     serverManager,
   });
-  await discordClient.login(config.discordToken);
+  startupLogger.info('OpenCode server recovery completed');
   const sessionsSkippedDuringRecovery = await recoverSessions(stateManager, serverManager, streamHandler, {
     logger: asLifecycleLogger(startupLogger),
     recoveredClients,
@@ -308,6 +310,13 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
     stateManager,
     streamHandler,
     threadResolver,
+  });
+  startupLogger.info('Discord runtime handlers registered');
+
+  startupLogger.info('Starting Discord login');
+  void warnOnFailure(startupLogger, 'Discord login failed', {}, async () => {
+    await discordClient.login(config.discordToken);
+    startupLogger.info('Discord login completed');
   });
 
   configLoader.onChange?.((nextConfig) => {
@@ -377,6 +386,7 @@ function registerDiscordRuntimeHandlers(client: DiscordClientLike, dependencies:
   const autocompleteHandler = createAutocompleteHandler(dependencies);
 
   client.on?.('interactionCreate', (interaction) => {
+    logger.info('Raw interactionCreate received', getRawInteractionLogContext(interaction));
     void handleInteraction(interaction as Parameters<typeof handleInteraction>[0], {
       autocompleteHandler,
       commandHandlers,
@@ -407,6 +417,22 @@ function registerDiscordRuntimeHandlers(client: DiscordClientLike, dependencies:
       stateManager: dependencies.stateManager as StateManager,
     });
   });
+}
+
+function getRawInteractionLogContext(interaction: unknown): Record<string, unknown> {
+  if (!isRecord(interaction)) {
+    return { interactionType: typeof interaction };
+  }
+
+  return {
+    id: typeof interaction.id === 'string' ? interaction.id : undefined,
+    commandName: typeof interaction.commandName === 'string' ? interaction.commandName : undefined,
+    channelId: typeof interaction.channelId === 'string' ? interaction.channelId : undefined,
+    guildId: typeof interaction.guildId === 'string' ? interaction.guildId : undefined,
+    type: interaction.type,
+    isChatInputCommand: typeof interaction.isChatInputCommand === 'function' ? interaction.isChatInputCommand() : undefined,
+    isAutocomplete: typeof interaction.isAutocomplete === 'function' ? interaction.isAutocomplete() : undefined,
+  };
 }
 
 function rememberMessageThread(message: unknown, threadResolver: ThreadResolver): void {
@@ -517,9 +543,15 @@ function createAutocompleteHandler(dependencies: RuntimeHandlerDependencies): Au
     const value = String(focused.value ?? '');
     const cacheManager = dependencies.cacheManager as CacheManager;
     if (focused.name === 'agent') {
-      return cacheManager.getAgents(channelConfig.projectPath)
-        .map((agent) => getAutocompleteName(agent))
-        .filter((name): name is string => Boolean(name))
+      const client = dependencies.serverManager.getClient(channelConfig.projectPath);
+      if (client !== undefined) {
+        try {
+          await dependencies.cacheManager.refresh(channelConfig.projectPath, client);
+        } catch {
+          // Autocomplete should degrade to the last cached agents if refresh fails.
+        }
+      }
+      return listSelectableAgentIds(cacheManager.getAgents(channelConfig.projectPath))
         .filter((name) => !channelConfig.allowedAgents?.length || channelConfig.allowedAgents.includes(name))
         .filter((name) => name.toLowerCase().includes(value.toLowerCase()))
         .slice(0, 25)
@@ -574,13 +606,6 @@ function asSessionStreamSubscriber(streamHandler: StreamHandlerLike): Constructo
       await streamHandler.subscribe(threadId, sessionId, client, dedupeSet);
     },
   };
-}
-
-function getAutocompleteName(value: unknown): string | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  return typeof value.name === 'string' ? value.name : typeof value.id === 'string' ? value.id : undefined;
 }
 
 async function getPathAutocompleteChoices(projectPath: string, value: string): Promise<Array<{ name: string; value: string }>> {

@@ -1,4 +1,6 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { watch as chokidarWatch } from 'chokidar';
 import { parse as parseYaml } from 'yaml';
 import { configSchema, type ValidatedConfig } from './schema.js';
@@ -7,6 +9,33 @@ import { BotError, ErrorCode } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ConfigLoader');
+
+function resolveProjectPath(projectPath: string, configDirectory: string): string {
+  if (projectPath === '~') {
+    return os.homedir();
+  }
+
+  if (projectPath.startsWith(`~${path.sep}`)) {
+    return path.join(os.homedir(), projectPath.slice(2));
+  }
+
+  return path.resolve(configDirectory, projectPath);
+}
+
+function resolveProjectPaths(config: ValidatedConfig, configPath: string): ValidatedConfig {
+  const configDirectory = path.dirname(path.resolve(configPath));
+
+  return {
+    ...config,
+    servers: config.servers.map((server) => ({
+      ...server,
+      channels: server.channels.map((channel) => ({
+        ...channel,
+        projectPath: resolveProjectPath(channel.projectPath, configDirectory),
+      })),
+    })),
+  };
+}
 
 /** Callback invoked after a config reload succeeds. */
 export type ChangeCallback = (config: ValidatedConfig) => void;
@@ -94,7 +123,7 @@ export class ConfigLoader {
       });
     }
 
-    return result.data;
+    return resolveProjectPaths(result.data, this.configPath);
   }
 
   /**

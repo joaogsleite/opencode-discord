@@ -78,6 +78,20 @@ describe('handleInteraction', () => {
     );
   });
 
+  it('logs command receipt with command name and correlation ID', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await handleInteraction(createCommandInteraction('new'), {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map([['new', vi.fn<CommandHandler>()]]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    });
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"msg":"Command interaction received"'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"commandName":"new"'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/"correlationId":"channel-1-\d+"/));
+  });
+
   it('responds to autocomplete interactions with returned choices', async () => {
     const choices: ApplicationCommandOptionChoiceData[] = [
       { name: 'agent-a', value: 'agent-a' },
@@ -97,6 +111,20 @@ describe('handleInteraction', () => {
       expect.objectContaining({ correlationId: expect.stringMatching(/^channel-1-\d+$/) }),
     );
     expect(interaction.respond).toHaveBeenCalledWith(choices);
+  });
+
+  it('logs autocomplete receipt with command name and correlation ID', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await handleInteraction(createAutocompleteInteraction('new'), {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map(),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(async () => []),
+    });
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"msg":"Autocomplete interaction received"'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"commandName":"new"'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/"correlationId":"channel-1-\d+"/));
   });
 
   it('returns an ephemeral error for unknown commands', async () => {

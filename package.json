@@ -14,7 +14,13 @@
     "service:stop": "bash scripts/stop.sh",
     "service:restart": "bash scripts/restart.sh",
     "service:unsetup": "bash scripts/unsetup.sh",
-    "service:status": "bash scripts/status.sh"
+    "service:status": "bash scripts/status.sh",
+    "service:restart-detached": "bash scripts/restart-detached.sh",
+    "discord:guilds": "tsx scripts/discord/guilds.ts",
+    "discord:channels": "tsx scripts/discord/channels.ts",
+    "discord:create-channel": "tsx scripts/discord/createChannel.ts",
+    "discord:rename-channel": "tsx scripts/discord/renameChannel.ts",
+    "discord:ensure-channel": "tsx scripts/discord/ensureChannel.ts"
   },
   "keywords": [],
   "author": "",

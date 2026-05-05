@@ -75,6 +75,32 @@ describe('createAgentCommandHandler', () => {
     expect(interaction.editReply).not.toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.objectContaining({ data: expect.objectContaining({ description: expect.stringContaining('review') }) })] }));
   });
 
+  it('lists only direct-use agents', async () => {
+    const deps = createDeps({
+      cacheManager: {
+        refresh: vi.fn(async () => undefined),
+        getAgents: vi.fn(() => [
+          { name: 'build', mode: 'primary' },
+          { name: 'plan', mode: 'primary' },
+          { name: 'custom' },
+          { name: 'general', mode: 'subagent' },
+          { name: 'compact', mode: 'primary', hidden: true },
+        ]),
+      },
+    });
+    const interaction = createInteraction('list');
+
+    await createAgentCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig: { channelId: 'channel-1', projectPath: '/repo' } });
+
+    const replyOptions = vi.mocked(interaction.editReply).mock.calls[0]?.[0] as { embeds?: Array<{ data: { description?: string } }> } | undefined;
+    const description = replyOptions?.embeds?.[0]?.data.description ?? '';
+    expect(description).toContain('build');
+    expect(description).toContain('plan');
+    expect(description).toContain('custom');
+    expect(description).not.toContain('general');
+    expect(description).not.toContain('compact');
+  });
+
   it('defers the list reply before starting server/cache work', async () => {
     const events: string[] = [];
     const deps = createDeps({

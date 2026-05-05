@@ -358,6 +358,62 @@ describe('StreamHandler', () => {
     expect(edits.at(-1)).toContain('Running: bash');
   });
 
+  it('clears running tool status and stops typing when the session reports an error', async () => {
+    vi.useFakeTimers();
+    const { thread, edits, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const persistent = streamThenNever([
+      textDelta('Working'),
+      {
+        directory: '/repo',
+        payload: {
+          type: 'message.part.updated',
+          sessionID: 'session-1',
+          part: { id: 'tool-1', type: 'tool', tool: 'task', state: { status: 'running' } },
+        },
+      },
+      { directory: '/repo', payload: { type: 'session.error', sessionID: 'session-1', error: { message: 'aborted' } } },
+    ]);
+    const client = createClient([persistent.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
+    await vi.advanceTimersByTimeAsync(9_000);
+    handler.unsubscribe('thread-1');
+
+    expect(edits).toContain('Working');
+    expect(edits.at(-1)).not.toContain('Running: task');
+    expect(typing).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears running tool status and stops typing when session status becomes idle', async () => {
+    vi.useFakeTimers();
+    const { thread, edits, typing } = createThread();
+    const handler = createHandler({}, thread);
+    const persistent = streamThenNever([
+      textDelta('Working'),
+      {
+        directory: '/repo',
+        payload: {
+          type: 'message.part.updated',
+          sessionID: 'session-1',
+          part: { id: 'tool-1', type: 'tool', tool: 'task', state: { status: 'running' } },
+        },
+      },
+      { directory: '/repo', payload: { type: 'session.status', sessionID: 'session-1', status: 'idle' } },
+    ]);
+    const client = createClient([persistent.iterable]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await persistent.drained;
+    await vi.advanceTimersByTimeAsync(9_000);
+    handler.unsubscribe('thread-1');
+
+    expect(edits).toContain('Working');
+    expect(edits.at(-1)).not.toContain('Running: task');
+    expect(typing).toHaveBeenCalledTimes(1);
+  });
+
   it('delegates question and permission events', async () => {
     const { thread } = createThread();
     const questionHandler = { handleQuestionEvent: vi.fn(async () => undefined) };

@@ -74,6 +74,12 @@ async function handleCommandInteraction(
   options: InteractionHandlerOptions,
 ): Promise<void> {
   const context = createContext(interaction, options.configLoader);
+  logger.info('Command interaction received', {
+    commandName: interaction.commandName,
+    correlationId: context.correlationId,
+    channelId: interaction.channelId,
+    guildId: interaction.guildId,
+  });
 
   try {
     if (context.channelConfig && !checkUserAllowed(context.channelConfig, interaction.user.id)) {
@@ -97,11 +103,28 @@ async function handleAutocompleteInteraction(
   options: InteractionHandlerOptions,
 ): Promise<void> {
   const context = createContext(interaction, options.configLoader);
+  logger.info('Autocomplete interaction received', {
+    commandName: interaction.commandName,
+    correlationId: context.correlationId,
+    channelId: interaction.channelId,
+    guildId: interaction.guildId,
+  });
 
   try {
     const choices = await options.autocompleteHandler(interaction, context);
+    logger.info('Autocomplete choices resolved', {
+      commandName: interaction.commandName,
+      correlationId: context.correlationId,
+      choiceCount: choices.length,
+    });
     await interaction.respond(choices.slice(0, 25));
-  } catch {
+    logger.info('Autocomplete response sent', {
+      commandName: interaction.commandName,
+      correlationId: context.correlationId,
+      choiceCount: Math.min(choices.length, 25),
+    });
+  } catch (err) {
+    logger.warn('Autocomplete handler failed', { commandName: interaction.commandName, correlationId: context.correlationId, err });
     await interaction.respond([]);
   }
 }

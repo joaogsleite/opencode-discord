@@ -71,6 +71,40 @@ servers:
     expect(channel!.projectPath).toBe('/tmp/project');
   });
 
+  it('resolves relative projectPath values from the config file directory', async () => {
+    fs.writeFileSync(configPath, `
+discordToken: test-token
+servers:
+  - serverId: "111"
+    channels:
+      - channelId: "222"
+        projectPath: "../project"
+`);
+    const loader = new ConfigLoader(configPath);
+
+    await loader.load();
+
+    const channel = loader.getChannelConfig('111', '222');
+    expect(channel!.projectPath).toBe(path.resolve(tmpDir, '../project'));
+  });
+
+  it('resolves home-relative projectPath values from the current user home directory', async () => {
+    fs.writeFileSync(configPath, `
+discordToken: test-token
+servers:
+  - serverId: "111"
+    channels:
+      - channelId: "222"
+        projectPath: "~/Developer/project"
+`);
+    const loader = new ConfigLoader(configPath);
+
+    await loader.load();
+
+    const channel = loader.getChannelConfig('111', '222');
+    expect(channel!.projectPath).toBe(path.join(os.homedir(), 'Developer/project'));
+  });
+
   it('getChannelConfig returns undefined for unknown channel', async () => {
     fs.writeFileSync(configPath, validYaml);
     const loader = new ConfigLoader(configPath);

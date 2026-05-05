@@ -68,7 +68,7 @@ servers:
   - serverId: "111111111111111111"
     channels:
       - channelId: "123456789012345678"
-        projectPath: "/absolute/path/to/project"
+        projectPath: "../project"
 ```
 
 Channel options:
@@ -76,7 +76,7 @@ Channel options:
 | Field | Default | Purpose |
 | --- | --- | --- |
 | `channelId` | Required | Discord text channel ID. |
-| `projectPath` | Required | Absolute local project path served by OpenCode. |
+| `projectPath` | Required | Local project path served by OpenCode. Absolute paths, config-relative paths such as `../project`, and home-relative paths such as `~/Developer/project` are supported. |
 | `defaultAgent` | `build` in callers when omitted | Agent used when a command does not specify one. |
 | `allowAgentSwitch` | `true` | Allows `/agent set` and `/new agent:<name>`. |
 | `allowedAgents` | `[]` | Agent allowlist. Empty means all agents. |

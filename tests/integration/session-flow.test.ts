@@ -45,7 +45,7 @@ function createOpenCodeClient() {
 }
 
 function createInteraction(commandName: string, values: Record<string, string | null>) {
-  const createdThreads: Array<{ id: string; send: ReturnType<typeof vi.fn> }> = [];
+  const createdThreads: Array<{ id: string; send: ReturnType<typeof vi.fn>; members: { add: ReturnType<typeof vi.fn> } }> = [];
   const interaction = {
     id: `${commandName}-interaction`,
     commandName,
@@ -57,7 +57,7 @@ function createInteraction(commandName: string, values: Record<string, string | 
     channel: {
       threads: {
         create: vi.fn(async () => {
-          const thread = { id: `thread-${createdThreads.length + 1}`, send: vi.fn(async () => ({ edit: vi.fn() })) };
+          const thread = { id: `thread-${createdThreads.length + 1}`, send: vi.fn(async () => ({ edit: vi.fn() })), members: { add: vi.fn(async () => undefined) } };
           createdThreads.push(thread);
           return thread;
         }),

@@ -2,6 +2,7 @@ import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeCacheClient } from '../../opencode/cache.js';
 import type { CacheManager } from '../../opencode/cache.js';
+import { listSelectableAgentIds } from '../../opencode/agentIds.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { checkAgentAllowed } from '../../utils/permissions.js';
@@ -71,9 +72,7 @@ async function handleList(interaction: ChatInputCommandInteraction, context: Int
   await interaction.deferReply();
   const client = await deps.serverManager.ensureRunning(channelConfig.projectPath) as OpencodeCacheClient;
   await deps.cacheManager.refresh(channelConfig.projectPath, client);
-  const agents = deps.cacheManager.getAgents(channelConfig.projectPath)
-    .map(getName)
-    .filter((name): name is string => Boolean(name))
+  const agents = listSelectableAgentIds(deps.cacheManager.getAgents(channelConfig.projectPath))
     .filter((name) => !channelConfig.allowedAgents?.length || channelConfig.allowedAgents.includes(name));
   const embed = new EmbedBuilder()
     .setTitle('Available Agents')
@@ -105,15 +104,6 @@ function requireSession(session: SessionState | undefined, threadId: string): Se
   }
 
   return session;
-}
-
-function getName(value: unknown): string | undefined {
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return typeof record.name === 'string' ? record.name : typeof record.id === 'string' ? record.id : undefined;
-  }
-
-  return undefined;
 }
 
 function formatAgentList(agents: string[]): string {

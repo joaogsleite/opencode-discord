@@ -2,7 +2,10 @@ import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { createLogger, type Logger } from '../../utils/logger.js';
 import { checkAgentAllowed } from '../../utils/permissions.js';
+
+const logger = createLogger('NewCommand');
 
 interface InteractionContext {
   correlationId: string;
@@ -14,6 +17,7 @@ type CommandHandler = (interaction: ChatInputCommandInteraction, context: Intera
 interface ThreadLike {
   id: string;
   send(content: string): Promise<unknown>;
+  members: { add(userId: string): Promise<unknown> };
 }
 
 interface ThreadCreatableChannel {
@@ -26,6 +30,7 @@ interface ThreadCreatableChannel {
 export interface NewCommandDependencies {
   serverManager: { ensureRunning(projectPath: string): Promise<unknown> };
   sessionBridge: Pick<SessionBridge, 'createSession' | 'sendPrompt'>;
+  logger?: Pick<Logger, 'info'>;
   rememberThread?: (threadId: string, thread: ThreadLike) => void;
 }
 
@@ -36,10 +41,13 @@ export interface NewCommandDependencies {
  */
 export function createNewCommandHandler(deps: NewCommandDependencies): CommandHandler {
   return async (interaction: ChatInputCommandInteraction, context: InteractionContext): Promise<void> => {
+    const log = deps.logger ?? logger;
+    log.info('/new started', { correlationId: context.correlationId, channelId: interaction.channelId, guildId: interaction.guildId });
     const channelConfig = requireChannelConfig(context);
     const prompt = interaction.options.getString('prompt', true);
     const title = normalizeTitle(interaction.options.getString('title'), prompt);
     const agent = interaction.options.getString('agent') ?? channelConfig.defaultAgent ?? 'build';
+    log.info('/new options resolved', { correlationId: context.correlationId, projectPath: channelConfig.projectPath, agent, title });
     const agentAllowed = checkAgentAllowed(channelConfig, agent);
 
     if (agentAllowed !== true) {
@@ -48,12 +56,19 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
         : `Agent \'${agent}\' is not allowed in this channel.`, { agent });
     }
 
-    const channel = requireThreadCreatableChannel(interaction);
+    log.info('/new deferring reply', { correlationId: context.correlationId });
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    log.info('/new reply deferred', { correlationId: context.correlationId });
+    const channel = requireThreadCreatableChannel(interaction);
+    log.info('/new ensuring OpenCode server', { correlationId: context.correlationId, projectPath: channelConfig.projectPath });
     const client = requireOpencodeClient(await deps.serverManager.ensureRunning(channelConfig.projectPath), channelConfig.projectPath);
+    log.info('/new OpenCode server ready', { correlationId: context.correlationId, projectPath: channelConfig.projectPath });
     const thread = await channel.threads.create({ name: title, autoArchiveDuration: 1440, reason: 'OpenCode session' });
+    log.info('/new Discord thread created', { correlationId: context.correlationId, threadId: thread.id });
+    await thread.members.add(interaction.user.id);
     deps.rememberThread?.(thread.id, thread);
 
+    log.info('/new creating OpenCode session', { correlationId: context.correlationId, threadId: thread.id });
     await deps.sessionBridge.createSession({
       client,
       threadId: thread.id,
@@ -65,8 +80,11 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
       createdBy: interaction.user.id,
       title,
     });
+    log.info('/new sending initial prompt', { correlationId: context.correlationId, threadId: thread.id });
     await deps.sessionBridge.sendPrompt(thread.id, { client, content: prompt, agent, model: null });
+    log.info('/new editing reply', { correlationId: context.correlationId, threadId: thread.id });
     await interaction.editReply({ content: `Created OpenCode session in thread ${thread.id}.` });
+    log.info('/new completed', { correlationId: context.correlationId, threadId: thread.id });
   };
 }
 

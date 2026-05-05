@@ -13,9 +13,11 @@ export interface GlobalEventLike {
     partID?: string;
     delta?: string;
     field?: string;
+    status?: string;
     part?: Record<string, unknown>;
     info?: unknown;
     request?: unknown;
+    error?: unknown;
     properties?: Record<string, unknown>;
   };
 }
@@ -370,9 +372,24 @@ export class StreamHandler {
 
     if (payload.type === 'session.idle') {
       if (getSessionId(payload) === context.sessionId) {
+        context.runningTools.clear();
         await this.render(context, true);
         this.stopTyping(context.state);
         context.idleMessageId = context.currentMessageId;
+      }
+      return;
+    }
+
+    if (payload.type === 'session.error') {
+      if (getSessionId(payload) === context.sessionId) {
+        await this.handleTerminalSessionEvent(context);
+      }
+      return;
+    }
+
+    if (payload.type === 'session.status') {
+      if (getSessionId(payload) === context.sessionId && isTerminalSessionStatus(getPayloadString(payload, 'status'))) {
+        await this.handleTerminalSessionEvent(context);
       }
       return;
     }
@@ -410,6 +427,13 @@ export class StreamHandler {
     if (payload.type === 'permission.asked') {
       await this.options.permissionHandler.handlePermissionEvent(context.threadId, getPayloadProperties(payload) ?? payload, context.client);
     }
+  }
+
+  private async handleTerminalSessionEvent(context: ReturnType<StreamHandler['createContext']>): Promise<void> {
+    context.runningTools.clear();
+    await this.render(context, true);
+    this.stopTyping(context.state);
+    context.idleMessageId = context.currentMessageId;
   }
 
   private async handleTextDelta(
@@ -584,7 +608,13 @@ function isSessionScopedEvent(type: string): boolean {
     || type === 'message.part.updated'
     || type === 'question.asked'
     || type === 'permission.asked'
-    || type === 'session.idle';
+    || type === 'session.idle'
+    || type === 'session.error'
+    || type === 'session.status';
+}
+
+function isTerminalSessionStatus(status: string | undefined): boolean {
+  return status === 'idle' || status === 'error';
 }
 
 function getSessionId(payload: GlobalEventLike['payload']): string | undefined {

@@ -21,7 +21,7 @@ servers:
 
       # A channel with full agent access
       - channelId: "123456789012345678"  # (required) Discord text channel ID
-        projectPath: "/absolute/path/to/your/project"  # (required) Absolute path to local project
+        projectPath: "../your-project"      # (required) Local project path. Supports absolute paths, paths relative to this config file, and ~/ paths
         defaultAgent: "build"            # (optional, default: "build") Agent used when /new omits the agent arg
         allowAgentSwitch: true           # (optional, default: true) Whether /agent set and /new agent:X are permitted
         allowedAgents: []                # (optional, default: []) Agent whitelist. Empty = all project agents available
@@ -33,7 +33,7 @@ servers:
 
       # A channel locked to the plan agent on the same project
       - channelId: "234567890123456789"
-        projectPath: "/absolute/path/to/your/project"
+        projectPath: "../your-project"
         defaultAgent: "plan"
         allowAgentSwitch: false          # /agent set is rejected; locked to defaultAgent
         allowedUsers: []
@@ -44,7 +44,7 @@ servers:
 
       # A restricted channel -- specific users only, limited agent selection
       - channelId: "345678901234567890"
-        projectPath: "/absolute/path/to/another/project"
+        projectPath: "~/Developer/another-project"
         defaultAgent: "build"
         allowAgentSwitch: true
         allowedAgents:                   # Only these agents can be selected

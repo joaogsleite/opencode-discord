@@ -9,7 +9,7 @@ function createInteraction(options: { channel?: unknown; prompt?: string; agent?
     channelId: 'channel-1',
     guildId: 'guild-1',
     user: { id: 'user-1' },
-    channel: options.channel ?? { threads: { create: vi.fn(async () => ({ id: 'thread-1', send: vi.fn() })) } },
+    channel: options.channel ?? { threads: { create: vi.fn(async () => ({ id: 'thread-1', send: vi.fn(), members: { add: vi.fn(async () => undefined) } })) } },
     options: {
       getString: vi.fn((name: string, required?: boolean) => {
         if (name === 'prompt') {
@@ -55,7 +55,7 @@ describe('createNewCommandHandler', () => {
   const channelConfig: ChannelConfig = { channelId: 'channel-1', projectPath: '/repo', defaultAgent: 'build' };
 
   it('creates a thread and session, sends the first prompt, and edits the deferred reply', async () => {
-    const thread = { id: 'thread-1', send: vi.fn(async () => undefined) };
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
     const channel = { threads: { create: vi.fn(async () => thread) } };
     const deps = createDeps();
     const interaction = createInteraction({ channel, prompt: 'Build feature', title: 'Feature work' });
@@ -75,6 +75,59 @@ describe('createNewCommandHandler', () => {
     }));
     expect(deps.sessionBridge.sendPrompt).toHaveBeenCalledWith('thread-1', expect.objectContaining({ content: 'Build feature', agent: 'build' }));
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('thread-1') }));
+  });
+
+  it('adds the command user to the created thread', async () => {
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
+    const channel = { threads: { create: vi.fn(async () => thread) } };
+    const deps = createDeps();
+    const interaction = createInteraction({ channel });
+
+    await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(thread.members.add).toHaveBeenCalledWith('user-1');
+  });
+
+  it('logs each /new execution boundary', async () => {
+    const logger = { info: vi.fn() };
+    const deps = createDeps({ logger });
+    const interaction = createInteraction();
+
+    await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(logger.info).toHaveBeenCalledWith('/new started', expect.objectContaining({ correlationId: 'corr-1' }));
+    expect(logger.info).toHaveBeenCalledWith('/new reply deferred', expect.objectContaining({ correlationId: 'corr-1' }));
+    expect(logger.info).toHaveBeenCalledWith('/new OpenCode server ready', expect.objectContaining({ correlationId: 'corr-1', projectPath: '/repo' }));
+    expect(logger.info).toHaveBeenCalledWith('/new completed', expect.objectContaining({ correlationId: 'corr-1', threadId: 'thread-1' }));
+  });
+
+  it('defers before resolving the OpenCode server or creating a thread', async () => {
+    const events: string[] = [];
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
+    const channel = { threads: { create: vi.fn(async () => { events.push('createThread'); return thread; }) } };
+    const deps = createDeps({
+      serverManager: { ensureRunning: vi.fn(async () => { events.push('ensureRunning'); return { session: {} }; }) },
+    });
+    const interaction = createInteraction({ channel });
+    vi.mocked(interaction.deferReply).mockImplementation(async () => {
+      events.push('deferReply');
+      return undefined as unknown as Awaited<ReturnType<ChatInputCommandInteraction['deferReply']>>;
+    });
+
+    await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(events.slice(0, 3)).toEqual(['deferReply', 'ensureRunning', 'createThread']);
+  });
+
+  it('defers before validating thread support', async () => {
+    const interaction = createInteraction({ channel: {} });
+    const deps = createDeps();
+
+    await expect(createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig }))
+      .rejects.toMatchObject({ code: ErrorCode.DISCORD_API_ERROR });
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(deps.serverManager.ensureRunning).not.toHaveBeenCalled();
   });
 
   it('rejects disallowed requested agents before starting OpenCode', async () => {
