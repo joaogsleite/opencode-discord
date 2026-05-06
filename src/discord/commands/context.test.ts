@@ -62,7 +62,7 @@ describe('createContextCommandHandler', () => {
 
     expect(deps.resolveSafePath).toHaveBeenCalledWith('/repo', 'src/a.ts');
     expect(deps.buffer.list('thread-1')).toEqual(['/repo/src/a.ts', '/repo/src/b.ts']);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Added to context:\n`/repo/src/a.ts`\n`/repo/src/b.ts`', flags: MessageFlags.Ephemeral });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Added to context:\n```\n/repo/src/a.ts\n/repo/src/b.ts\n```', flags: MessageFlags.Ephemeral });
   });
 
   it('bounds long add confirmations with a truncation marker', async () => {
@@ -95,7 +95,7 @@ describe('createContextCommandHandler', () => {
 
     await createContextCommandHandler(createDeps(buffer))(interaction, { correlationId: 'corr-1', channelConfig });
 
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Context buffer:\n`/repo/src/a.ts`', flags: MessageFlags.Ephemeral });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Context buffer:\n```\n/repo/src/a.ts\n```', flags: MessageFlags.Ephemeral });
   });
 
   it('bounds long list responses with a truncation marker', async () => {

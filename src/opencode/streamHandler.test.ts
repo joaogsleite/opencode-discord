@@ -150,6 +150,18 @@ describe('StreamHandler', () => {
     expect(edits.at(-1)).toBe('Hello world');
   });
 
+  it('inserts a line break before a streamed bold section title', async () => {
+    const { thread, edits, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([stream([textDelta('... type included.'), textDelta('**Optimizing message chunking**\n\nI’m considering a maximum...')])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['... type included.']);
+    expect(edits.at(-1)).toBe('... type included.\n\n**Optimizing message chunking**\n\nI’m considering a maximum...');
+  });
+
   it('starts a separate Discord message for each assistant message ID', async () => {
     const { thread, edits, sends } = createThread();
     const handler = createHandler({}, thread);
@@ -322,6 +334,17 @@ describe('StreamHandler', () => {
     expect(sends.every((content) => content.length <= 1800)).toBe(true);
   });
 
+  it('escapes inline triple backticks in streamed prose', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([stream([textDelta('Mention ``` inline without starting a code block.')])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['Mention `\u200b`` inline without starting a code block.']);
+  });
+
   it('detects tables and delegates table handling', async () => {
     const { thread } = createThread();
     const tableHandler = { handleTable: vi.fn(async () => undefined) };
@@ -355,7 +378,379 @@ describe('StreamHandler', () => {
     await handler.subscribe('thread-1', 'session-1', client);
     await handler.waitForIdle('thread-1');
 
-    expect(edits.at(-1)).toContain('Running: bash');
+    expect(edits.at(-1)).toContain('-# Running: bash');
+  });
+
+  it('prints todos once from the first todo update event', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'todo.updated',
+            sessionID: 'session-1',
+            todos: [
+              { content: 'Write tests', status: 'completed', priority: 'high' },
+              { content: 'Implement renderer', status: 'in_progress', priority: 'high' },
+              { content: 'Verify output', status: 'pending', priority: 'medium' },
+            ],
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Todos\n> - Write tests\n> - Implement renderer\n> - Verify output']);
+  });
+
+  it('ignores later todo update events while streaming', async () => {
+    const { thread, sends, edits } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'todo.updated',
+            sessionID: 'session-1',
+            todos: [{ content: 'Write tests', status: 'in_progress', priority: 'high' }],
+          },
+        },
+        {
+          directory: '/repo',
+          payload: {
+            type: 'todo.updated',
+            sessionID: 'session-1',
+            todos: [{ content: 'Write tests', status: 'completed', priority: 'high' }],
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Todos\n> - Write tests']);
+    expect(edits).toEqual([]);
+  });
+
+  it('suppresses completed todo tool JSON output after printing the first todo list', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'todo.updated',
+            sessionID: 'session-1',
+            todos: [{ content: 'Write tests', status: 'in_progress', priority: 'high' }],
+          },
+        },
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'todowrite',
+              state: {
+                status: 'completed',
+                input: {},
+                title: 'Todos',
+                output: '[{"content":"Write tests","status":"completed","priority":"high"}]',
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Todos\n> - Write tests']);
+  });
+
+  it('renders completed terminal tool output as a one-line summary', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'bash',
+              state: { status: 'completed', input: {}, title: 'Task: bash', output: 'pnpm test\n\nPASS streamHandler.test.ts' },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Bash completed · pnpm test']);
+  });
+
+  it('does not duplicate completed tool output when title and output are identical', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const summary = 'Success. Updated the following files:\nM src/discord/commands/cat.ts\nM src/discord/commands/diff.ts\nM src/discord/commands/git.ts';
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'apply_patch',
+              state: { status: 'completed', input: {}, title: summary, output: summary },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Patch completed · 3 files updated · cat.ts, diff.ts, git.ts']);
+  });
+
+  it('renders search result dumps as a one-line summary', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const output = 'Found 196 matches (showing first 100)\n/Users/joaoleite/Developer/opencode-discord/src/discord/commands/diff.ts:\n  Line 32:       await interaction.editReply({ content: \'No file changes in this session.\' });\n\n/Users/joaoleite/Developer/opencode-discord/src/discord/commands/git.ts:\n  Line 21:   edit(options: unknown): Promise<unknown>;\n\n/Users/joaoleite/Developer/opencode-discord/src/discord/commands/cat.test.ts:\n  Line 53:     expect(interaction.reply).toHaveBeenCalledWith(...)';
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'grep',
+              state: { status: 'completed', input: { pattern: 'tool|result|part' }, title: 'Task: grep', output },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Search completed · 196 matches · 100 shown · diff.ts, git.ts, cat.test.ts']);
+  });
+
+  it('renders failed tool output as a one-line summary', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'bash',
+              state: { status: 'error', input: { command: 'pnpm test' }, title: 'Task: bash', error: 'Command failed with exit code 1\nFAIL streamHandler.test.ts' },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Bash failed · pnpm test']);
+  });
+
+  it('renders completed skill tool parts without verbose output', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'skill',
+              state: {
+                status: 'completed',
+                input: { name: 'test-driven-development' },
+                title: '-> Skill test-driven-development',
+                output: '<skill_content name="test-driven-development">\nlong instructions\n</skill_content>',
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> -> Skill test-driven-development']);
+  });
+
+  it('truncates long completed terminal tool output to one Discord message', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'bash',
+              state: { status: 'completed', input: {}, title: 'Task: bash', output: 'a'.repeat(5000) },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Bash completed']);
+  });
+
+  it('renders completed read tool parts without file contents', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'read',
+              state: {
+                status: 'completed',
+                input: { filePath: '/repo/src/index.ts' },
+                title: 'Read: /repo/src/index.ts',
+                output: '1: const huge = true;\n2: '.concat('file contents\n'.repeat(200)),
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> Read: /repo/src/index.ts']);
+  });
+
+  it('renders structured directory tool output as a single summary line', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'read',
+              state: {
+                status: 'completed',
+                input: { filePath: '../configs' },
+                title: 'Read: ../configs',
+                output: '../configs <path>/Users/joaoleite/Developer/configs</path> <type>directory</type> <entries> .DS_Store .git/ .opencode/ AGENTS.md helpers/ install.sh modules/ opencode.json profiles/  (9 entries) </entries>',
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> **Read directory:** `/Users/joaoleite/Developer/configs` · 9 entries']);
+  });
+
+  it('renders structured file tool output as a single omitted-content line', async () => {
+    const { thread, sends } = createThread();
+    const handler = createHandler({}, thread);
+    const client = createClient([
+      stream([
+        {
+          directory: '/repo',
+          payload: {
+            type: 'message.part.updated',
+            sessionID: 'session-1',
+            messageID: 'msg-1',
+            part: {
+              id: 'tool-1',
+              type: 'tool',
+              tool: 'read',
+              state: {
+                status: 'completed',
+                input: { filePath: '/repo/src/index.ts' },
+                title: 'Read: /repo/src/index.ts',
+                output: '<path>/repo/src/index.ts</path>\n<type>file</type>\n<content>1: const huge = true;\n2: file contents\n</content>',
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(sends).toEqual(['> **Read file:** `/repo/src/index.ts` · content omitted']);
   });
 
   it('clears running tool status and stops typing when the session reports an error', async () => {

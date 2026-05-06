@@ -24,6 +24,7 @@ function createInteraction(options: { file?: string; start?: number | null; end?
       }),
     },
     reply: vi.fn(async () => undefined),
+    followUp: vi.fn(async () => undefined),
   } as unknown as ChatInputCommandInteraction;
 }
 
@@ -32,6 +33,7 @@ function createDeps(overrides: Partial<CatCommandDependencies> = {}): CatCommand
     resolveSafePath: vi.fn(() => '/repo/src/index.ts'),
     readFile: vi.fn(async () => 'line 1\nline 2\nline 3'),
     inferLanguage: vi.fn(() => 'typescript'),
+    createAttachment: vi.fn((content: string, name: string) => ({ content, name })),
     ...overrides,
   };
 }
@@ -39,7 +41,7 @@ function createDeps(overrides: Partial<CatCommandDependencies> = {}): CatCommand
 describe('createCatCommandHandler', () => {
   const channelConfig: ChannelConfig = { channelId: 'channel-1', projectPath: '/repo' };
 
-  it('reads a safe file path, applies line range, and replies with a fenced code block', async () => {
+  it('reads a safe file path, applies line range, and replies with an inline code block', async () => {
     const deps = createDeps();
     const interaction = createInteraction({ file: 'src/index.ts', start: 2, end: 3 });
 
@@ -48,18 +50,48 @@ describe('createCatCommandHandler', () => {
     expect(deps.resolveSafePath).toHaveBeenCalledWith('/repo', 'src/index.ts');
     expect(deps.readFile).toHaveBeenCalledWith('/repo/src/index.ts');
     expect(deps.inferLanguage).toHaveBeenCalledWith('/repo/src/index.ts');
-    expect(interaction.reply).toHaveBeenCalledWith({ content: '```typescript\nline 2\nline 3\n```' });
+    expect(deps.createAttachment).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'File: `/repo/src/index.ts` (lines 2-3)\n```typescript\nline 2\nline 3\n```' });
   });
 
-  it('truncates long file output to stay within Discord limits', async () => {
+  it('splits long file output across inline code block messages without truncating', async () => {
     const deps = createDeps({ readFile: vi.fn(async () => 'a'.repeat(2000)) });
     const interaction = createInteraction();
 
     await createCatCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
 
-    const reply = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { content: string };
-    expect(reply.content.length).toBeLessThanOrEqual(2000);
-    expect(reply.content).toContain('truncated');
+    expect(deps.createAttachment).not.toHaveBeenCalled();
+    const firstContent = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { content: string };
+    expect(interaction.followUp).toHaveBeenCalled();
+    const followUpContent = vi.mocked(interaction.followUp).mock.calls[0]?.[0] as { content: string };
+    expect(firstContent.content).toMatch(/^File: `\/repo\/src\/index\.ts`\n```typescript\n/);
+    expect(firstContent.content.length).toBeLessThanOrEqual(2000);
+    expect(followUpContent.content).toMatch(/^```typescript\n/);
+    expect(followUpContent.content.length).toBeLessThanOrEqual(2000);
+    expect(`${firstContent.content}\n${followUpContent.content}`).not.toContain('... truncated');
+  });
+
+  it('truncates extremely long file output after sending inline code blocks', async () => {
+    const deps = createDeps({ readFile: vi.fn(async () => 'a'.repeat(25_000)) });
+    const interaction = createInteraction();
+
+    await createCatCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    const sent = [
+      vi.mocked(interaction.reply).mock.calls[0]?.[0],
+      ...vi.mocked(interaction.followUp).mock.calls.map((call) => call[0]),
+    ] as Array<{ content: string }>;
+    expect(sent.at(-1)?.content).toContain('... truncated');
+    expect(sent.every((message) => message.content.length <= 2000)).toBe(true);
+  });
+
+  it('escapes triple backticks inside file content code blocks', async () => {
+    const deps = createDeps({ readFile: vi.fn(async () => 'before\n```ts\ninside\n```\nafter') });
+    const interaction = createInteraction();
+
+    await createCatCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'File: `/repo/src/index.ts`\n```typescript\nbefore\n`\u200b``ts\ninside\n`\u200b``\nafter\n```' });
   });
 
   it('maps read failures to FILE_NOT_FOUND', async () => {

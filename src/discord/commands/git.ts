@@ -1,8 +1,9 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
+import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { formatCodeBlockMessage, splitCodeBlockMessages } from '../../utils/formatter.js';
 
 interface CommandContext {
   correlationId: string;
@@ -26,10 +27,14 @@ const MAX_ERROR_DETAILS_LENGTH = 1600;
 /** Dependencies for the /git command handler. */
 export interface GitCommandDependencies {
   execFile(file: string, args: string[], options: { cwd: string }): Promise<ExecResult>;
+  createAttachment(content: string, name: string): unknown;
 }
 
 const execFileAsync = promisify(nodeExecFile) as (file: string, args: string[], options: { cwd: string }) => Promise<ExecResult>;
-const defaultDeps: GitCommandDependencies = { execFile: execFileAsync };
+const defaultDeps: GitCommandDependencies = {
+  execFile: execFileAsync,
+  createAttachment: (content, name) => new AttachmentBuilder(Buffer.from(content), { name }),
+};
 
 /**
  * Create a handler for project-local git helper commands.
@@ -54,8 +59,22 @@ export function createGitCommandHandler(deps: GitCommandDependencies = defaultDe
       : buildGitArgs(interaction, group, subcommand);
     const result = await runGit(deps, projectPath, args);
     const fallback = group === 'stash' && subcommand === 'list' ? 'No stashes.' : 'No output.';
+    if (subcommand === 'diff') {
+      const diff = (result.stdout || result.stderr).trimEnd() || fallback;
+      await sendSplitEditReply(interaction, splitCodeBlockMessages(diff, 'diff'));
+      return;
+    }
+
     await interaction.editReply({ content: formatGitOutput(result.stdout || result.stderr, subcommand === 'diff' ? 'diff' : '', fallback) });
   };
+}
+
+async function sendSplitEditReply(interaction: ChatInputCommandInteraction, messages: string[]): Promise<void> {
+  const [first = '```\n\n```', ...rest] = messages;
+  await interaction.editReply({ content: first });
+  for (const content of rest) {
+    await interaction.followUp({ content });
+  }
 }
 
 function requireChannelConfig(context: CommandContext): ChannelConfig {
@@ -100,7 +119,7 @@ function formatGitErrorMessage(details: string): string {
     return 'Git command failed.';
   }
 
-  return `Git command failed.\n\`\`\`\n${truncateGitErrorDetails(trimmed)}\n\`\`\``;
+  return `Git command failed.\n${formatCodeBlockMessage(truncateGitErrorDetails(trimmed), '')}`;
 }
 
 function truncateGitErrorDetails(details: string): string {
@@ -185,7 +204,7 @@ function buildDiffArgs(interaction: ChatInputCommandInteraction): string[] {
 function formatGitOutput(output: string, language: string, fallback = 'No output.'): string {
   const trimmed = output.trimEnd() || fallback;
   const body = trimmed.length > 1800 ? `${trimmed.slice(0, 1800)}\n... truncated` : trimmed;
-  return `\`\`\`${language}\n${body}\n\`\`\``;
+  return formatCodeBlockMessage(body, language);
 }
 
 async function confirmResetHard(interaction: ChatInputCommandInteraction, deps: GitCommandDependencies, cwd: string): Promise<void> {

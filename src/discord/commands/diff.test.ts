@@ -36,12 +36,13 @@ function createDeps(overrides: Partial<DiffCommandDependencies> = {}): DiffComma
     stateManager: { getSession: vi.fn(() => createSession()) },
     serverManager: { getClient: vi.fn(() => client) },
     splitMessage: vi.fn((text: string) => [text]),
+    createAttachment: vi.fn((content: string, name: string) => ({ content, name })),
     ...overrides,
   };
 }
 
 describe('createDiffCommandHandler', () => {
-  it('formats session diff as a diff code block', async () => {
+  it('formats session diff as an inline-preview attachment', async () => {
     const deps = createDeps();
     const interaction = createInteraction();
 
@@ -50,24 +51,34 @@ describe('createDiffCommandHandler', () => {
     const client = deps.serverManager.getClient('/repo') as { session: { diff: ReturnType<typeof vi.fn> } };
     expect(interaction.deferReply).toHaveBeenCalledWith();
     expect(client.session.diff).toHaveBeenCalledWith({ sessionID: 'session-1' });
-    expect(deps.splitMessage).toHaveBeenCalledWith('```diff\ndiff --git a/file.ts b/file.ts\n```');
-    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/file.ts b/file.ts\n```' });
+    expect(deps.splitMessage).not.toHaveBeenCalled();
+    expect(deps.createAttachment).toHaveBeenCalledWith('diff --git a/file.ts b/file.ts', 'session.diff');
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: 'Project:\n```\n/repo\n```', files: [{ content: 'diff --git a/file.ts b/file.ts', name: 'session.diff' }] });
   });
 
-  it('uses matching three-backtick diff fences', async () => {
+  it('keeps long session diffs complete in the attachment', async () => {
+    const longDiff = `diff --git a/file.ts b/file.ts\n${'a'.repeat(4000)}`;
+    const client = { session: { diff: vi.fn(async () => longDiff) } };
+    const deps = createDeps({ serverManager: { getClient: vi.fn(() => client) } });
+    const interaction = createInteraction();
+
+    await createDiffCommandHandler(deps)(interaction, { correlationId: 'corr-1' });
+
+    expect(deps.splitMessage).not.toHaveBeenCalled();
+    expect(deps.createAttachment).toHaveBeenCalledWith(longDiff, 'session.diff');
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it('does not wrap the attached diff in code fences', async () => {
     const deps = createDeps();
 
     await createDiffCommandHandler(deps)(createInteraction(), { correlationId: 'corr-1' });
 
-    expect(deps.splitMessage).toHaveBeenCalledTimes(1);
-    const splitMessage = deps.splitMessage;
-    expect(splitMessage).toBeDefined();
-    const call = vi.mocked(splitMessage!).mock.calls[0];
-    expect(call).toBeDefined();
-    const formatted = call?.[0];
-    expect(formatted?.startsWith('```diff\n')).toBe(true);
-    expect(formatted?.startsWith('````diff')).toBe(false);
-    expect(formatted).toBe('```diff\ndiff --git a/file.ts b/file.ts\n```');
+    const createAttachment = deps.createAttachment;
+    expect(createAttachment).toBeDefined();
+    const attachedContent = vi.mocked(createAttachment!).mock.calls[0]?.[0];
+    expect(attachedContent).toBe('diff --git a/file.ts b/file.ts');
+    expect(attachedContent?.startsWith('```diff')).toBe(false);
   });
 
   it('reports no changes when session diff is empty', async () => {

@@ -25,12 +25,14 @@ function createInteraction(options: {
     reply: vi.fn(async () => options.replyResult),
     deferReply: vi.fn(async () => undefined),
     editReply: vi.fn(async () => undefined),
+    followUp: vi.fn(async () => undefined),
   } as unknown as ChatInputCommandInteraction;
 }
 
 function createDeps(overrides: Partial<GitCommandDependencies> = {}): GitCommandDependencies {
   return {
     execFile: vi.fn(async () => ({ stdout: ' M src/index.ts\n', stderr: '' })),
+    createAttachment: vi.fn((content: string, name: string) => ({ content, name })),
     ...overrides,
   };
 }
@@ -141,5 +143,77 @@ describe('createGitCommandHandler', () => {
 
     expect(deps.execFile).toHaveBeenCalledWith('git', ['stash', 'list'], { cwd: '/repo' });
     expect(interaction.editReply).toHaveBeenCalledWith({ content: '```\nNo stashes.\n```' });
+  });
+
+  it('sends git diff output as an inline code block', async () => {
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/file.ts b/file.ts\n', stderr: '' })) });
+    const interaction = createInteraction({ subcommand: 'diff' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.execFile).toHaveBeenCalledWith('git', ['diff'], { cwd: '/repo' });
+    expect(deps.createAttachment).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/file.ts b/file.ts\n```' });
+  });
+
+  it('splits long git diff output across inline code block messages without truncating', async () => {
+    const diff = `${'diff --git a/file.ts b/file.ts\n'.repeat(80)}final line`;
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: diff, stderr: '' })) });
+    const interaction = createInteraction({ subcommand: 'diff' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    const firstContent = vi.mocked(interaction.editReply).mock.calls[0]?.[0] as { content: string };
+    expect(interaction.followUp).toHaveBeenCalled();
+    const followUpContent = vi.mocked(interaction.followUp).mock.calls[0]?.[0] as { content: string };
+    expect(firstContent.content).toMatch(/^```diff\n/);
+    expect(firstContent.content.length).toBeLessThanOrEqual(2000);
+    expect(followUpContent.content).toMatch(/^```diff\n/);
+    expect(followUpContent.content.length).toBeLessThanOrEqual(2000);
+    expect(`${firstContent.content}\n${followUpContent.content}`).toContain('final line');
+    expect(`${firstContent.content}\n${followUpContent.content}`).not.toContain('... truncated');
+  });
+
+  it('truncates extremely long git diff output after sending inline code blocks', async () => {
+    const diff = 'a'.repeat(25_000);
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: diff, stderr: '' })) });
+    const interaction = createInteraction({ subcommand: 'diff' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    const sent = [
+      vi.mocked(interaction.editReply).mock.calls[0]?.[0],
+      ...vi.mocked(interaction.followUp).mock.calls.map((call) => call[0]),
+    ] as Array<{ content: string }>;
+    expect(sent.at(-1)?.content).toContain('... truncated');
+    expect(sent.every((message) => message.content.length <= 2000)).toBe(true);
+  });
+
+  it('keeps non-diff git output inline', async () => {
+    const deps = createDeps();
+    const interaction = createInteraction({ subcommand: 'status' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.createAttachment).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```\n M src/index.ts\n```' });
+  });
+
+  it('escapes triple backticks inside git diff output code blocks', async () => {
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/file.md b/file.md\n+```ts\n+inside\n+```\n', stderr: '' })) });
+    const interaction = createInteraction({ subcommand: 'diff' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/file.md b/file.md\n+`\u200b``ts\n+inside\n+`\u200b``\n```' });
+  });
+
+  it('escapes triple backticks inside non-diff git output code blocks', async () => {
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'stash@{0}: ``` marker\n', stderr: '' })) });
+    const interaction = createInteraction({ group: 'stash', subcommand: 'list' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```\nstash@{0}: `\u200b`` marker\n```' });
   });
 });

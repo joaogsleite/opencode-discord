@@ -57,7 +57,7 @@ export function createDownloadCommandHandler(deps: DownloadCommandDependencies =
       throw new BotError(ErrorCode.FILE_NOT_FOUND, `File not found: ${file}`, { file, cause: getErrorMessage(error) });
     }
 
-    await interaction.reply({ files: [attachment] });
+    await interaction.reply({ content: `File:\n\`\`\`\n${filePath}\n\`\`\``, files: [attachment] });
   };
 }
 

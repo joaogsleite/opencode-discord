@@ -32,7 +32,7 @@ describe('createLsCommandHandler', () => {
 
     expect(deps.resolveSafePath).toHaveBeenCalledWith('/repo', 'src');
     expect(deps.listDirectory).toHaveBeenCalledWith('/repo/src');
-    expect(interaction.reply).toHaveBeenCalledWith({ content: '```\ncommands/\nindex.ts\n```' });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Path:\n```\n/repo/src\n```\nListing:\n```\ncommands/\nindex.ts\n```' });
   });
 
   it('maps directory listing failures to FILE_NOT_FOUND', async () => {

@@ -1,5 +1,8 @@
 const MAX_CHUNK_SIZE = 1800;
 const MAX_CODE_FENCE_LANGUAGE_LENGTH = 64;
+const MAX_INLINE_CODE_OUTPUT_LENGTH = 10_000;
+const DISCORD_MESSAGE_LIMIT = 2000;
+const ZERO_WIDTH_SPACE = '\u200b';
 
 /**
  * Split a message into Discord-safe chunks.
@@ -7,12 +10,13 @@ const MAX_CODE_FENCE_LANGUAGE_LENGTH = 64;
  * @returns Array of message chunks.
  */
 export function splitMessage(text: string): string[] {
-  if (text.length <= MAX_CHUNK_SIZE) {
-    return [text];
+  const safeText = escapeInlineCodeFenceMarkers(text);
+  if (safeText.length <= MAX_CHUNK_SIZE) {
+    return [safeText];
   }
 
   const chunks: string[] = [];
-  let remaining = text;
+  let remaining = safeText;
 
   while (remaining.length > 0) {
     if (remaining.length <= MAX_CHUNK_SIZE) {
@@ -25,18 +29,59 @@ export function splitMessage(text: string): string[] {
     const blockState = getCodeBlockState(chunk);
 
     if (blockState.unclosed) {
-      chunk += '\n```';
+      chunk += `\n${blockState.fence}`;
     }
 
     chunks.push(chunk);
     remaining = remaining.slice(splitAt).trimStart();
 
     if (blockState.unclosed && remaining.length > 0) {
-      remaining = `\`\`\`${formatCodeFenceLanguage(blockState.language)}\n${remaining}`;
+      remaining = `${blockState.fence}${formatCodeFenceLanguage(blockState.language)}\n${remaining}`;
     }
   }
 
   return chunks.filter((chunk) => chunk.length > 0);
+}
+
+/**
+ * Format text as one or more Discord-safe fenced code block messages.
+ * @param text - Full code block body.
+ * @param language - Markdown code fence language.
+ * @param firstPrefix - Optional text to prepend before the first code block.
+ * @returns Message chunks containing closed code fences.
+ */
+export function splitCodeBlockMessages(text: string, language: string, firstPrefix = ''): string[] {
+  const truncated = text.length > MAX_INLINE_CODE_OUTPUT_LENGTH
+    ? `${text.slice(0, MAX_INLINE_CODE_OUTPUT_LENGTH)}\n... truncated`
+    : text;
+  const safeText = escapeCodeBlockBodyFenceMarkers(truncated);
+  const safeLanguage = formatCodeFenceLanguage(language);
+  const chunks: string[] = [];
+  let remaining = safeText;
+  let prefix = firstPrefix;
+
+  do {
+    const overhead = prefix.length + 8 + safeLanguage.length;
+    const maxBodyLength = Math.max(DISCORD_MESSAGE_LIMIT - overhead, 1);
+    const splitAt = remaining.length > maxBodyLength ? findSplitPoint(remaining, maxBodyLength) : remaining.length;
+    const body = remaining.slice(0, splitAt);
+    chunks.push(`${prefix}\`\`\`${safeLanguage}\n${body}\n\`\`\``);
+    remaining = remaining.slice(splitAt).trimStart();
+    prefix = '';
+  } while (remaining.length > 0);
+
+  return chunks;
+}
+
+/**
+ * Format text as a single Discord-safe fenced code block message.
+ * @param text - Code block body.
+ * @param language - Markdown code fence language.
+ * @returns Message containing a closed code fence.
+ */
+export function formatCodeBlockMessage(text: string, language: string): string {
+  const safeLanguage = formatCodeFenceLanguage(language);
+  return `\`\`\`${safeLanguage}\n${escapeCodeBlockBodyFenceMarkers(text)}\n\`\`\``;
 }
 
 function findSplitPoint(text: string, maxLength: number): number {
@@ -58,14 +103,16 @@ function findSplitPoint(text: string, maxLength: number): number {
   return maxLength;
 }
 
-function getCodeBlockState(text: string): { unclosed: boolean; language: string | null } {
-  const fences = [...text.matchAll(/```(\w*)/g)];
+function getCodeBlockState(text: string): { unclosed: boolean; language: string | null; fence: string } {
+  const fences = [...text.matchAll(/^(`{3,})([^`]*)$/gm)];
   if (fences.length % 2 === 0) {
-    return { unclosed: false, language: null };
+    return { unclosed: false, language: null, fence: '```' };
   }
 
-  const language = fences.at(-1)?.[1] ?? null;
-  return { unclosed: true, language };
+  const lastFence = fences.at(-1);
+  const fence = lastFence?.[1] ?? '```';
+  const language = lastFence?.[2]?.trim().split(/\s+/)[0] ?? null;
+  return { unclosed: true, language, fence };
 }
 
 function formatCodeFenceLanguage(language: string | null): string {
@@ -114,5 +161,20 @@ export function formatHistoryMessage(role: string, content: string): string {
     return `**User:**\n${quoted}`;
   }
 
-  return `**Assistant:**\n${content}`;
+  return `**Assistant:**\n${escapeInlineCodeFenceMarkers(content)}`;
+}
+
+function escapeInlineCodeFenceMarkers(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => isCodeFenceLine(line) ? line : line.replaceAll('```', `\`${ZERO_WIDTH_SPACE}\`\``))
+    .join('\n');
+}
+
+function escapeCodeBlockBodyFenceMarkers(text: string): string {
+  return text.replaceAll('```', `\`${ZERO_WIDTH_SPACE}\`\``);
+}
+
+function isCodeFenceLine(line: string): boolean {
+  return /^`{3,}[^`]*$/.test(line);
 }

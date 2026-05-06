@@ -67,6 +67,7 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
     log.info('/new Discord thread created', { correlationId: context.correlationId, threadId: thread.id });
     await thread.members.add(interaction.user.id);
     deps.rememberThread?.(thread.id, thread);
+    await thread.send(formatInitialPrompt(prompt));
 
     log.info('/new creating OpenCode session', { correlationId: context.correlationId, threadId: thread.id });
     await deps.sessionBridge.createSession({
@@ -124,4 +125,8 @@ function requireThreadCreatableChannel(interaction: ChatInputCommandInteraction)
 function normalizeTitle(title: string | null, prompt: string): string {
   const base = title?.trim() || prompt.trim().slice(0, 50) || 'OpenCode session';
   return base.slice(0, 100);
+}
+
+function formatInitialPrompt(prompt: string): string {
+  return `> **User prompt:**\n${prompt.split('\n').map((line) => `> ${line}`).join('\n')}`;
 }

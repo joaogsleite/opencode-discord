@@ -35,7 +35,7 @@ describe('createDownloadCommandHandler', () => {
     expect(deps.resolveSafePath).toHaveBeenCalledWith('/repo', 'report.txt');
     expect(deps.verifyReadable).toHaveBeenCalledWith('/repo/report.txt');
     expect(deps.createAttachment).toHaveBeenCalledWith('/repo/report.txt', 'report.txt');
-    expect(interaction.reply).toHaveBeenCalledWith({ files: [attachment] });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'File:\n```\n/repo/report.txt\n```', files: [attachment] });
   });
 
   it('maps unreadable files to FILE_NOT_FOUND before creating an attachment', async () => {

@@ -42,7 +42,7 @@ describe('QuestionHandler', () => {
     vi.restoreAllMocks();
   });
 
-  it('posts an embed with lettered options for question events', async () => {
+  it('posts a plain text message with lettered options for question events', async () => {
     const { thread, sends } = createThread();
     const handler = createHandler({}, thread);
     const client = createClient();
@@ -70,10 +70,11 @@ describe('QuestionHandler', () => {
     );
 
     expect(thread.send).toHaveBeenCalledTimes(1);
-    expect(sends[0]?.embeds?.[0]?.title).toBe('Proceed?');
-    expect(sends[0]?.embeds?.[0]?.description).toContain('Should I continue?');
-    expect(sends[0]?.embeds?.[0]?.description).toContain('a) Yes - Continue the task');
-    expect(sends[0]?.embeds?.[0]?.description).toContain('b) No - Stop now');
+    expect(sends[0]?.embeds).toBeUndefined();
+    expect(sends[0]?.content).toContain('**Proceed?**');
+    expect(sends[0]?.content).toContain('Should I continue?');
+    expect(sends[0]?.content).toContain('a) Yes - Continue the task');
+    expect(sends[0]?.content).toContain('b) No - Stop now');
     expect(handler.hasPendingQuestion('thread-1')).toBe(true);
   });
 
@@ -112,7 +113,7 @@ describe('QuestionHandler', () => {
     await handler.handleQuestionAnswer('thread-1', 'custom');
 
     expect(sends).toHaveLength(2);
-    expect(sends[1]?.embeds?.[0]?.title).toBe('Reason');
+    expect(sends[1]?.content).toContain('**Reason**');
     expect(client.question.reply).toHaveBeenCalledWith({ requestID: 'request-1', answers: [['No'], ['custom']] });
     expect(client.question.reject).not.toHaveBeenCalled();
     expect(handler.hasPendingQuestion('thread-1')).toBe(false);
@@ -194,7 +195,7 @@ describe('QuestionHandler', () => {
     expect(client.question.reject).not.toHaveBeenCalled();
     expect(sends).toHaveLength(3);
     expect(sends[1]?.content).toBe('Invalid answer. Please choose one of the listed options. *(ref: corr-1)*');
-    expect(sends[2]?.embeds?.[0]?.title).toBe('Pick one');
+    expect(sends[2]?.content).toContain('**Pick one**');
     expect(handler.hasPendingQuestion('thread-1')).toBe(true);
   });
 
@@ -267,7 +268,7 @@ describe('QuestionHandler', () => {
       client,
     );
 
-    expect(sends[0]?.embeds?.[0]?.description).toContain(instruction);
+    expect(sends[0]?.content).toContain(instruction);
   });
 
   it('rejects unsupported questions with more than 26 options before posting', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Worker } from 'node:worker_threads';
-import { detectTable, formatHistoryMessage, splitMessage } from './formatter.js';
+import { detectTable, formatHistoryMessage, splitCodeBlockMessages, splitMessage } from './formatter.js';
 
 describe('splitMessage', () => {
   it('returns single chunk for short messages', () => {
@@ -47,6 +47,54 @@ describe('splitMessage', () => {
 
     expect(result.length).toBeGreaterThan(0);
     expect(result.length).toBeLessThan(10);
+  });
+
+  it('escapes inline triple backticks without changing real code fences', () => {
+    const text = 'Mention ``` inline.\n```ts\nconst value = true;\n```';
+
+    const result = splitMessage(text);
+
+    expect(result).toEqual(['Mention `\u200b`` inline.\n```ts\nconst value = true;\n```']);
+  });
+
+  it('does not escape standalone code fences with metadata', () => {
+    const text = '```tsx title=example\nconst value = true;\n```';
+
+    const result = splitMessage(text);
+
+    expect(result).toEqual([text]);
+  });
+
+  it('preserves four-backtick fences across splits', () => {
+    const code = '````markdown\n```ts\nconst nested = true;\n```\n' + 'x\n'.repeat(300) + '````';
+
+    const result = splitMessage(code);
+
+    for (const chunk of result) {
+      const fences = chunk.match(/````/g) ?? [];
+      expect(fences.length % 2).toBe(0);
+    }
+    if (result.length > 1) {
+      expect(result[1]).toMatch(/^````markdown/);
+    }
+  });
+
+  it('re-opens split code fences with metadata using the first language token', () => {
+    const code = '```tsx title=example\n' + 'const value = true;\n'.repeat(120) + '```';
+
+    const result = splitMessage(code);
+
+    if (result.length > 1) {
+      expect(result[1]).toMatch(/^```tsx\n/);
+    }
+  });
+});
+
+describe('splitCodeBlockMessages', () => {
+  it('escapes triple backticks inside generated code blocks', () => {
+    const result = splitCodeBlockMessages('before\n```ts\ninside\n```\nafter', 'markdown');
+
+    expect(result).toEqual(['```markdown\nbefore\n`\u200b``ts\ninside\n`\u200b``\nafter\n```']);
   });
 });
 
@@ -111,5 +159,11 @@ describe('formatHistoryMessage', () => {
     const result = formatHistoryMessage('assistant', 'response');
 
     expect(result).toBe('**Assistant:**\nresponse');
+  });
+
+  it('escapes inline triple backticks in assistant history messages', () => {
+    const result = formatHistoryMessage('assistant', 'Mention ``` inline.');
+
+    expect(result).toBe('**Assistant:**\nMention `\u200b`` inline.');
   });
 });

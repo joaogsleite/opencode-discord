@@ -3,6 +3,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { inferLanguage, resolveSafePath } from '../../utils/filesystem.js';
+import { splitCodeBlockMessages } from '../../utils/formatter.js';
 
 interface CommandContext {
   correlationId: string;
@@ -11,13 +12,12 @@ interface CommandContext {
 
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
 
-const MAX_BODY_LENGTH = 1800;
-
 /** Dependencies for the /cat command handler. */
 export interface CatCommandDependencies {
   resolveSafePath(projectRoot: string, relativePath: string): string;
   readFile(filePath: string): Promise<string>;
   inferLanguage(filePath: string): string;
+  createAttachment?(content: string, name: string): unknown;
 }
 
 const defaultDeps: CatCommandDependencies = {
@@ -44,8 +44,13 @@ export function createCatCommandHandler(deps: CatCommandDependencies = defaultDe
     }
     const ranged = applyLineRange(content, interaction.options.getInteger('start'), interaction.options.getInteger('end'));
     const language = deps.inferLanguage(filePath);
+    const messages = formatResponse(filePath, interaction.options.getInteger('start'), interaction.options.getInteger('end'), language, ranged);
 
-    await interaction.reply({ content: formatCodeBlock(language, ranged) });
+    const [first = '```\n\n```', ...rest] = messages;
+    await interaction.reply({ content: first });
+    for (const message of rest) {
+      await interaction.followUp({ content: message });
+    }
   };
 }
 
@@ -68,13 +73,9 @@ function applyLineRange(content: string, start: number | null, end: number | nul
   return lines.slice(startIndex, endIndex).join('\n');
 }
 
-function formatCodeBlock(language: string, content: string): string {
-  let body = content;
-  if (body.length > MAX_BODY_LENGTH) {
-    body = `${body.slice(0, MAX_BODY_LENGTH)}\n... truncated`;
-  }
-
-  return `\`\`\`${language}\n${body}\n\`\`\``;
+function formatResponse(filePath: string, start: number | null, end: number | null, language: string, content: string): string[] {
+  const range = start === null && end === null ? '' : ` (lines ${start ?? 1}-${end ?? 'end'})`;
+  return splitCodeBlockMessages(content, language, `File: \`${filePath}\`${range}\n`);
 }
 
 function getErrorMessage(error: unknown): string {

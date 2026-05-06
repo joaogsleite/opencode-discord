@@ -82,11 +82,6 @@ interface QuestionEventLike {
   request?: unknown;
 }
 
-interface QuestionEmbed {
-  title: string;
-  description: string;
-}
-
 interface SdkErrorEnvelope {
   error: {
     message?: string;
@@ -305,19 +300,16 @@ export class QuestionHandler {
     if (!question) {
       return;
     }
-    await thread.send({ embeds: [this.createEmbed(question)] });
+    await thread.send(this.formatQuestion(question));
   }
 
-  private createEmbed(question: QuestionInfo): QuestionEmbed {
+  private formatQuestion(question: QuestionInfo): string {
     const optionLines = question.options.map((option, index) => {
       const letter = String.fromCharCode(97 + index);
       return `${letter}) ${option.label} - ${option.description}`;
     });
     const instructions = this.createInstructions(question);
-    return {
-      title: question.header,
-      description: [question.question, ...optionLines, instructions].filter(Boolean).join('\n'),
-    };
+    return [`**${question.header}**`, question.question, ...optionLines, instructions].filter(Boolean).join('\n');
   }
 
   private createInstructions(question: QuestionInfo): string {

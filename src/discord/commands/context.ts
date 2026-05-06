@@ -122,7 +122,7 @@ function requireThreadId(interaction: ChatInputCommandInteraction): string {
 
 function boundedFileList(header: string, files: string[]): string {
   const marker = '\n... truncated';
-  const full = `${header}\n${files.map((file) => `\`${file}\``).join('\n')}`;
+  const full = `${header}\n\`\`\`\n${files.join('\n')}\n\`\`\``;
   if (full.length <= MAX_CONTEXT_REPLY_LENGTH) return full;
   return `${full.slice(0, MAX_CONTEXT_REPLY_LENGTH - marker.length)}${marker}`;
 }

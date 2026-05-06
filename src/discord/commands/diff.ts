@@ -1,7 +1,6 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { AttachmentBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
-import { splitMessage as defaultSplitMessage } from '../../utils/formatter.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -14,6 +13,7 @@ export interface DiffCommandDependencies {
   stateManager: DiffStateManager;
   serverManager: { getClient(projectPath: string): unknown | undefined };
   splitMessage?: (text: string) => string[];
+  createAttachment?: (content: string, name: string) => unknown;
 }
 
 /**
@@ -33,12 +33,14 @@ export function createDiffCommandHandler(deps: DiffCommandDependencies): Command
       return;
     }
 
-    const chunks = (deps.splitMessage ?? defaultSplitMessage)('```diff\n' + diff + '\n```');
-    await interaction.editReply({ content: chunks[0] ?? 'No file changes in this session.' });
-    for (const chunk of chunks.slice(1)) {
-      await interaction.followUp({ content: chunk });
-    }
+    const createAttachment = deps.createAttachment ?? defaultCreateAttachment;
+    const attachment = createAttachment(diff, 'session.diff');
+    await interaction.editReply({ content: `Project:\n\`\`\`\n${session.projectPath}\n\`\`\``, files: [attachment as AttachmentBuilder] });
   };
+}
+
+function defaultCreateAttachment(content: string, name: string): AttachmentBuilder {
+  return new AttachmentBuilder(Buffer.from(content), { name });
 }
 
 function requireThreadSession(interaction: ChatInputCommandInteraction, stateManager: DiffStateManager, message: string): { threadId: string; session: SessionState } {

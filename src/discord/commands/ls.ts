@@ -36,7 +36,7 @@ export function createLsCommandHandler(deps: LsCommandDependencies = defaultDeps
       throw new BotError(ErrorCode.FILE_NOT_FOUND, `Path not found: ${requestedPath}`, { path: requestedPath, cause: getErrorMessage(error) });
     }
 
-    await interaction.reply({ content: formatListing(entries) });
+    await interaction.reply({ content: formatListing(dirPath, entries) });
   };
 }
 
@@ -48,15 +48,16 @@ function requireChannelConfig(context: CommandContext): ChannelConfig {
   return context.channelConfig;
 }
 
-function formatListing(entries: string[]): string {
-  return formatCodeBlock(entries.join('\n') || 'Empty directory');
+function formatListing(dirPath: string, entries: string[]): string {
+  const prefix = `Path:\n${formatCodeBlock(dirPath)}\nListing:\n`;
+  return `${prefix}${formatCodeBlock(entries.join('\n') || 'Empty directory', MAX_MESSAGE_LENGTH - prefix.length)}`;
 }
 
-function formatCodeBlock(content: string): string {
+function formatCodeBlock(content: string, maxLength = MAX_MESSAGE_LENGTH): string {
   const prefix = '```\n';
   const suffix = '\n```';
   const marker = '\n... truncated';
-  const maxBodyLength = MAX_MESSAGE_LENGTH - prefix.length - suffix.length;
+  const maxBodyLength = maxLength - prefix.length - suffix.length;
   let body = content;
 
   if (body.length > maxBodyLength) {

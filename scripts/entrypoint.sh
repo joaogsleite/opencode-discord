@@ -9,6 +9,12 @@ if [[ -z "${LOGIN_SHELL}" || ! -x "${LOGIN_SHELL}" ]]; then
   LOGIN_SHELL="/bin/sh"
 fi
 
+printf 'Waiting for Discord connectivity...\n'
+until /usr/bin/nc -z discord.com 443 >/dev/null 2>&1; do
+  sleep 5
+done
+printf 'Discord connectivity ready.\n'
+
 exec "${LOGIN_SHELL}" -lc "
   cd ${REPO_ROOT}
   if command -v nvm >/dev/null 2>&1 ; then

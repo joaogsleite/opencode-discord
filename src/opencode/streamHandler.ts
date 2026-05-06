@@ -18,6 +18,7 @@ export interface GlobalEventLike {
     info?: unknown;
     request?: unknown;
     error?: unknown;
+    todos?: unknown[];
     properties?: Record<string, unknown>;
   };
 }
@@ -147,6 +148,7 @@ const DEFAULT_EDIT_THROTTLE_MS = 1000;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRIES = 3;
 const TYPING_REFRESH_MS = 9000;
+const MAX_SUMMARY_DETAILS = 3;
 
 /** Streams OpenCode SSE events into Discord thread messages. */
 export class StreamHandler {
@@ -354,6 +356,7 @@ export class StreamHandler {
       lastEditAt: Number.NEGATIVE_INFINITY,
       lastRenderedContent: undefined as string | undefined,
       runningTools: new Map<string, string>(),
+      todosPrinted: false,
       tableDetected: false,
       idleMessageId: undefined as string | undefined,
     };
@@ -419,6 +422,11 @@ export class StreamHandler {
       return;
     }
 
+    if (payload.type === 'todo.updated') {
+      await this.handleTodoUpdated(context, payload);
+      return;
+    }
+
     if (payload.type === 'question.asked') {
       await this.options.questionHandler.handleQuestionEvent(context.threadId, getPayloadProperties(payload) ?? payload, context.client);
       return;
@@ -448,8 +456,9 @@ export class StreamHandler {
 
     const partID = getPayloadString(payload, 'partID') ?? 'default';
     this.startTyping(context.thread, context.state, context.threadId, context.sessionId);
-    context.parts.set(partID, `${context.parts.get(partID) ?? ''}${delta}`);
-    context.aggregate += delta;
+    const normalizedDelta = normalizeTextDeltaBoundary(context.aggregate, delta);
+    context.parts.set(partID, `${context.parts.get(partID) ?? ''}${normalizedDelta}`);
+    context.aggregate += normalizedDelta;
 
     if (!context.tableDetected && detectTable(context.aggregate)) {
       context.tableDetected = true;
@@ -477,7 +486,54 @@ export class StreamHandler {
       context.runningTools.delete(id);
     }
 
+    if (status === 'completed' || status === 'error') {
+      await this.sendToolResult(context, part, status);
+    }
+
     await this.render(context, true);
+  }
+
+  private async handleTodoUpdated(
+    context: ReturnType<StreamHandler['createContext']>,
+    payload: GlobalEventLike['payload'],
+  ): Promise<void> {
+    const todos = getPayloadArray(payload, 'todos').filter(isRecord);
+    if (context.todosPrinted) {
+      return;
+    }
+
+    context.todosPrinted = true;
+    await context.thread.send(formatTodos(todos));
+  }
+
+  private async sendToolResult(
+    context: ReturnType<StreamHandler['createContext']>,
+    part: Record<string, unknown>,
+    status: string,
+  ): Promise<void> {
+    const state = getToolState(part);
+    const output = status === 'error' ? getRecordString(state, 'error') : getRecordString(state, 'output');
+    if (!output) {
+      return;
+    }
+
+    const title = getRecordString(state, 'title') ?? String(part.tool ?? part.name ?? 'Tool');
+    if (isTodoTool(part)) {
+      return;
+    }
+
+    const structuredSummary = formatStructuredToolSummary(output);
+    if (structuredSummary) {
+      await context.thread.send(formatQuote(structuredSummary));
+      return;
+    }
+
+    if (shouldRenderTitleOnly(part)) {
+      await context.thread.send(formatQuote(title));
+      return;
+    }
+
+    await context.thread.send(formatQuote(formatToolSummary(part, state, title, output, status)));
   }
 
   private async render(context: ReturnType<StreamHandler['createContext']>, forceEdit = false): Promise<void> {
@@ -517,7 +573,7 @@ export class StreamHandler {
     if (tools.length === 0) {
       return content;
     }
-    return `${content}\n\nRunning: ${tools.join(', ')}`;
+    return `${content}\n\n${formatSubtext(`Running: ${tools.join(', ')}`)}`;
   }
 
   private async switchMessageContext(
@@ -606,6 +662,7 @@ export class StreamHandler {
 function isSessionScopedEvent(type: string): boolean {
   return type === 'message.part.delta'
     || type === 'message.part.updated'
+    || type === 'todo.updated'
     || type === 'question.asked'
     || type === 'permission.asked'
     || type === 'session.idle'
@@ -638,6 +695,11 @@ function getMessageId(payload: GlobalEventLike['payload']): string | undefined {
 function getPayloadRecord(payload: GlobalEventLike['payload'], key: string): Record<string, unknown> | undefined {
   const value = getPayloadValue(payload, key);
   return isRecord(value) ? value : undefined;
+}
+
+function getPayloadArray(payload: GlobalEventLike['payload'], key: string): unknown[] {
+  const value = getPayloadValue(payload, key);
+  return Array.isArray(value) ? value : [];
 }
 
 function getPayloadString(payload: GlobalEventLike['payload'], key: string): string | undefined {
@@ -686,6 +748,204 @@ function getToolStatus(part: Record<string, unknown>): string | undefined {
   }
 
   return undefined;
+}
+
+function getToolState(part: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(part.state) ? part.state : {};
+}
+
+function getRecordString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function isTodoTool(part: Record<string, unknown>): boolean {
+  const tool = typeof part.tool === 'string' ? part.tool.toLowerCase() : '';
+  return tool === 'todowrite' || tool === 'todo';
+}
+
+function shouldRenderTitleOnly(part: Record<string, unknown>): boolean {
+  const tool = typeof part.tool === 'string' ? part.tool.toLowerCase() : '';
+  return tool === 'skill' || tool === 'read';
+}
+
+function formatTodos(todos: Record<string, unknown>[]): string {
+  const lines = todos.length > 0 ? todos.map(formatTodo) : ['No todos.'];
+  return formatQuote(`Todos\n${lines.join('\n')}`);
+}
+
+function formatTodo(todo: Record<string, unknown>): string {
+  const content = typeof todo.content === 'string' ? todo.content : typeof todo.title === 'string' ? todo.title : 'Untitled todo';
+  return `- ${content}`;
+}
+
+function formatQuote(content: string): string {
+  return content.split('\n').map((line) => `> ${line}`).join('\n');
+}
+
+function formatSubtext(content: string): string {
+  return content.split('\n').map((line) => `-# ${line}`).join('\n');
+}
+
+function normalizeTextDeltaBoundary(aggregate: string, delta: string): string {
+  if (!aggregate || /\s$/.test(aggregate) || !/^\*\*[^*\n]+\*\*(?:\n|$)/.test(delta)) {
+    return delta;
+  }
+
+  return `\n\n${delta}`;
+}
+
+function formatStructuredToolSummary(output: string): string | undefined {
+  const path = extractTag(output, 'path');
+  const type = extractTag(output, 'type')?.toLowerCase();
+  if (!path || !type) {
+    return undefined;
+  }
+
+  if (type === 'directory') {
+    const entries = extractTag(output, 'entries') ?? '';
+    const entryCount = entries.match(/\((\d+) entries\)/)?.[1];
+    const suffix = entryCount ? ` · ${entryCount} entries` : '';
+    return `**Read directory:** \`${path}\`${suffix}`;
+  }
+
+  if (type === 'file') {
+    return `**Read file:** \`${path}\` · content omitted`;
+  }
+
+  return `**Tool result:** \`${path}\` · structured output omitted`;
+}
+
+function extractTag(output: string, tag: string): string | undefined {
+  const match = output.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return match?.[1]?.trim();
+}
+
+function formatToolSummary(part: Record<string, unknown>, state: Record<string, unknown>, title: string, output: string, status: string): string {
+  const tool = getToolName(part);
+  const result = status === 'error' ? 'failed' : 'completed';
+  const patchSummary = formatPatchSummary(output, result);
+  if (patchSummary) {
+    return patchSummary;
+  }
+
+  const searchSummary = formatSearchSummary(tool, output, result);
+  if (searchSummary) {
+    return searchSummary;
+  }
+
+  const command = getCommandSummary(state, output, tool);
+  const label = formatToolLabel(tool, title);
+  return [`${label} ${result}`, command].filter(Boolean).join(' · ');
+}
+
+function getToolName(part: Record<string, unknown>): string {
+  const tool = typeof part.tool === 'string' ? part.tool : typeof part.name === 'string' ? part.name : 'tool';
+  return tool.toLowerCase();
+}
+
+function formatToolLabel(tool: string, title: string): string {
+  if (tool === 'bash') {
+    return 'Bash';
+  }
+  if (tool === 'glob') {
+    return 'Glob';
+  }
+  if (tool === 'grep') {
+    return 'Search';
+  }
+
+  return compactTitle(title) || titleCase(tool);
+}
+
+function compactTitle(title: string): string {
+  return title.replace(/^Task:\s*/i, '').split('\n')[0]?.trim() ?? '';
+}
+
+function getCommandSummary(state: Record<string, unknown>, output: string, tool: string): string | undefined {
+  const input = isRecord(state.input) ? state.input : undefined;
+  const command = typeof input?.command === 'string' ? input.command : undefined;
+  if (command) {
+    return compactOneLine(command);
+  }
+
+  if (tool !== 'bash') {
+    return undefined;
+  }
+
+  const firstLine = output.split('\n').find((line) => line.trim());
+  return firstLine && firstLine.length <= 120 ? compactOneLine(firstLine) : undefined;
+}
+
+function formatPatchSummary(output: string, result: string): string | undefined {
+  if (!output.startsWith('Success. Updated the following files:')) {
+    return undefined;
+  }
+
+  const files = output
+    .split('\n')
+    .map((line) => line.match(/^[A-Z]\s+(.+)$/)?.[1])
+    .filter((file): file is string => Boolean(file))
+    .map((file) => file.split('/').at(-1) ?? file);
+  const fileText = formatList(files);
+  const countText = `${files.length} ${files.length === 1 ? 'file' : 'files'} updated`;
+  return [`Patch ${result}`, countText, fileText].filter(Boolean).join(' · ');
+}
+
+function formatSearchSummary(tool: string, output: string, result: string): string | undefined {
+  if (tool !== 'grep') {
+    return undefined;
+  }
+
+  const match = output.match(/Found (\d+) matches(?: \(showing first (\d+)\))?/);
+  if (!match) {
+    return `Search ${result}`;
+  }
+
+  const matchCount = match[1];
+  const shownCount = match[2];
+  const files = extractSearchFiles(output);
+  return [
+    `Search ${result}`,
+    `${matchCount} matches`,
+    shownCount ? `${shownCount} shown` : undefined,
+    formatList(files),
+  ].filter(Boolean).join(' · ');
+}
+
+function extractSearchFiles(output: string): string[] {
+  const files: string[] = [];
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('Line ') || !trimmed.endsWith(':')) {
+      continue;
+    }
+
+    const file = trimmed.slice(0, -1).split('/').at(-1);
+    if (file && !files.includes(file)) {
+      files.push(file);
+    }
+  }
+
+  return files;
+}
+
+function formatList(values: string[]): string | undefined {
+  if (values.length === 0) {
+    return undefined;
+  }
+
+  const shown = values.slice(0, MAX_SUMMARY_DETAILS).join(', ');
+  const remaining = values.length - MAX_SUMMARY_DETAILS;
+  return remaining > 0 ? `${shown} + more` : shown;
+}
+
+function compactOneLine(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function titleCase(value: string): string {
+  return value.length === 0 ? 'Tool' : `${value[0]?.toUpperCase()}${value.slice(1)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

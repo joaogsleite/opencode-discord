@@ -74,7 +74,19 @@ describe('createNewCommandHandler', () => {
       title: 'Feature work',
     }));
     expect(deps.sessionBridge.sendPrompt).toHaveBeenCalledWith('thread-1', expect.objectContaining({ content: 'Build feature', agent: 'build' }));
+    expect(thread.send).toHaveBeenCalledWith('> **User prompt:**\n> Build feature');
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('thread-1') }));
+  });
+
+  it('quotes every line of a multiline initial prompt', async () => {
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
+    const channel = { threads: { create: vi.fn(async () => thread) } };
+    const deps = createDeps();
+    const interaction = createInteraction({ channel, prompt: 'Build feature\nInclude tests' });
+
+    await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(thread.send).toHaveBeenCalledWith('> **User prompt:**\n> Build feature\n> Include tests');
   });
 
   it('adds the command user to the created thread', async () => {
