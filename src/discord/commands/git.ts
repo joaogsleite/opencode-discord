@@ -23,6 +23,7 @@ interface MessageWithCollector {
 }
 
 const MAX_ERROR_DETAILS_LENGTH = 1600;
+const MAX_INLINE_DIFF_LENGTH = 10_000;
 
 /** Dependencies for the /git command handler. */
 export interface GitCommandDependencies {
@@ -61,6 +62,11 @@ export function createGitCommandHandler(deps: GitCommandDependencies = defaultDe
     const fallback = group === 'stash' && subcommand === 'list' ? 'No stashes.' : 'No output.';
     if (subcommand === 'diff') {
       const diff = (result.stdout || result.stderr).trimEnd() || fallback;
+      if (diff.length > MAX_INLINE_DIFF_LENGTH) {
+        await sendLargeDiffSummary(interaction, deps, projectPath, args);
+        return;
+      }
+
       await sendSplitEditReply(interaction, splitCodeBlockMessages(diff, 'diff'));
       return;
     }
@@ -75,6 +81,27 @@ async function sendSplitEditReply(interaction: ChatInputCommandInteraction, mess
   for (const content of rest) {
     await interaction.followUp({ content });
   }
+}
+
+async function sendLargeDiffSummary(interaction: ChatInputCommandInteraction, deps: GitCommandDependencies, cwd: string, diffArgs: string[]): Promise<void> {
+  const statArgs = [...diffArgs.slice(0, 1), '--numstat', ...diffArgs.slice(1)];
+  const result = await runGit(deps, cwd, statArgs);
+  const summary = formatDiffNumstat(result.stdout.trimEnd());
+  await interaction.editReply({ content: `Diff is too large to display inline. Re-run \`/git diff file:<path>\` to inspect one file.\n${formatCodeBlockMessage(summary, '')}` });
+}
+
+function formatDiffNumstat(output: string): string {
+  if (!output) {
+    return 'No file changes.';
+  }
+
+  return output
+    .split('\n')
+    .map((line) => {
+      const [additions = '-', deletions = '-', file = ''] = line.split('\t');
+      return `+${additions} -${deletions} ${file}`.trimEnd();
+    })
+    .join('\n');
 }
 
 function requireChannelConfig(context: CommandContext): ChannelConfig {
@@ -196,6 +223,11 @@ function buildDiffArgs(interaction: ChatInputCommandInteraction): string[] {
   }
   if (target === 'branch') {
     args.push(interaction.options.getString('base') ?? 'main');
+  }
+
+  const file = interaction.options.getString('file');
+  if (file) {
+    args.push('--', file);
   }
 
   return args;

@@ -714,6 +714,168 @@ describe('startBot', () => {
     ]);
   });
 
+  it('returns changed file autocomplete choices for /git diff file', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const cacheManager = {
+      refresh: vi.fn(async () => undefined),
+      getSessions: vi.fn(() => []),
+      getAgents: vi.fn(() => []),
+      getModels: vi.fn(() => []),
+      getMcpStatus: vi.fn(() => ({})),
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const execFile = vi.fn(async () => ({ stdout: 'src/index.ts\nsrc/git.ts\ndocs/readme.md\n', stderr: '' }));
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => state),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(),
+      },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      execFile,
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    const respond = vi.fn(async () => undefined);
+    await interactionListener?.({
+      id: 'interaction-1',
+      channelId: 'channel-1',
+      channel: null,
+      guildId: 'guild-1',
+      commandName: 'git',
+      options: {
+        getFocused: vi.fn(() => ({ name: 'file', value: 'src/' })),
+        getSubcommand: vi.fn(() => 'diff'),
+        getString: vi.fn((name: string) => name === 'target' ? 'unstaged' : null),
+      },
+      isChatInputCommand: () => false,
+      isAutocomplete: () => true,
+      respond,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(execFile).toHaveBeenCalledWith('git', ['diff', '--name-only'], { cwd: '/project/one' });
+    expect(respond).toHaveBeenCalledWith([
+      { name: 'src/index.ts', value: 'src/index.ts' },
+      { name: 'src/git.ts', value: 'src/git.ts' },
+    ]);
+  });
+
+  it('uses staged git diff args for /git diff file autocomplete', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const cacheManager = {
+      refresh: vi.fn(async () => undefined),
+      getSessions: vi.fn(() => []),
+      getAgents: vi.fn(() => []),
+      getModels: vi.fn(() => []),
+      getMcpStatus: vi.fn(() => ({})),
+    };
+    const discordClient = { login: vi.fn(), channels: { fetch: vi.fn() }, destroy: vi.fn(), on: vi.fn(), off: vi.fn() };
+    const execFile = vi.fn(async () => ({ stdout: 'src/staged.ts\n', stderr: '' }));
+
+    await startBot({
+      configLoader: { load: vi.fn(), getConfig: vi.fn(() => ({ discordToken: 'token', servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }] })) },
+      stateManager: { load: vi.fn(), getState: vi.fn(() => state), setServer: vi.fn(), getServer: vi.fn(), removeServer: vi.fn(), getSession: vi.fn(), setSession: vi.fn(), removeSession: vi.fn(), getQueue: vi.fn(() => []), clearQueue: vi.fn() },
+      serverManager: { ensureRunning: vi.fn(), getClient: vi.fn() },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      execFile,
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    await interactionListener?.({ id: 'interaction-1', channelId: 'channel-1', channel: null, guildId: 'guild-1', commandName: 'git', options: { getFocused: vi.fn(() => ({ name: 'file', value: '' })), getSubcommand: vi.fn(() => 'diff'), getString: vi.fn((name: string) => name === 'target' ? 'staged' : null) }, isChatInputCommand: () => false, isAutocomplete: () => true, respond: vi.fn(async () => undefined) });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(execFile).toHaveBeenCalledWith('git', ['diff', '--name-only', '--cached'], { cwd: '/project/one' });
+  });
+
+  it('uses branch git diff args for /git diff file autocomplete', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const cacheManager = { refresh: vi.fn(async () => undefined), getSessions: vi.fn(() => []), getAgents: vi.fn(() => []), getModels: vi.fn(() => []), getMcpStatus: vi.fn(() => ({})) };
+    const discordClient = { login: vi.fn(), channels: { fetch: vi.fn() }, destroy: vi.fn(), on: vi.fn(), off: vi.fn() };
+    const execFile = vi.fn(async () => ({ stdout: 'src/branch.ts\n', stderr: '' }));
+
+    await startBot({
+      configLoader: { load: vi.fn(), getConfig: vi.fn(() => ({ discordToken: 'token', servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }] })) },
+      stateManager: { load: vi.fn(), getState: vi.fn(() => state), setServer: vi.fn(), getServer: vi.fn(), removeServer: vi.fn(), getSession: vi.fn(), setSession: vi.fn(), removeSession: vi.fn(), getQueue: vi.fn(() => []), clearQueue: vi.fn() },
+      serverManager: { ensureRunning: vi.fn(), getClient: vi.fn() },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      execFile,
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    await interactionListener?.({ id: 'interaction-1', channelId: 'channel-1', channel: null, guildId: 'guild-1', commandName: 'git', options: { getFocused: vi.fn(() => ({ name: 'file', value: '' })), getSubcommand: vi.fn(() => 'diff'), getString: vi.fn((name: string) => name === 'target' ? 'branch' : name === 'base' ? 'develop' : null) }, isChatInputCommand: () => false, isAutocomplete: () => true, respond: vi.fn(async () => undefined) });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(execFile).toHaveBeenCalledWith('git', ['diff', '--name-only', 'develop'], { cwd: '/project/one' });
+  });
+
+  it('returns empty git diff file autocomplete choices when git fails', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const cacheManager = { refresh: vi.fn(async () => undefined), getSessions: vi.fn(() => []), getAgents: vi.fn(() => []), getModels: vi.fn(() => []), getMcpStatus: vi.fn(() => ({})) };
+    const discordClient = { login: vi.fn(), channels: { fetch: vi.fn() }, destroy: vi.fn(), on: vi.fn(), off: vi.fn() };
+    const execFile = vi.fn(async () => { throw new Error('git failed'); });
+
+    await startBot({
+      configLoader: { load: vi.fn(), getConfig: vi.fn(() => ({ discordToken: 'token', servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }] })) },
+      stateManager: { load: vi.fn(), getState: vi.fn(() => state), setServer: vi.fn(), getServer: vi.fn(), removeServer: vi.fn(), getSession: vi.fn(), setSession: vi.fn(), removeSession: vi.fn(), getQueue: vi.fn(() => []), clearQueue: vi.fn() },
+      serverManager: { ensureRunning: vi.fn(), getClient: vi.fn() },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      execFile,
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    const respond = vi.fn(async () => undefined);
+    await interactionListener?.({ id: 'interaction-1', channelId: 'channel-1', channel: null, guildId: 'guild-1', commandName: 'git', options: { getFocused: vi.fn(() => ({ name: 'file', value: '' })), getSubcommand: vi.fn(() => 'diff'), getString: vi.fn(() => null) }, isChatInputCommand: () => false, isAutocomplete: () => true, respond });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(respond).toHaveBeenCalledWith([]);
+  });
+
   it('refreshes agents before returning /agent autocomplete choices when a project server is running', async () => {
     const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
     const client = { app: { agents: vi.fn() } };

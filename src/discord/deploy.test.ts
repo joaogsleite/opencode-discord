@@ -81,6 +81,7 @@ describe('getCommandDefinitions', () => {
             ],
           }),
           expect.objectContaining({ name: 'stat', type: 5 }),
+          expect.objectContaining({ name: 'file', type: 3, autocomplete: true }),
         ]),
       }),
     );

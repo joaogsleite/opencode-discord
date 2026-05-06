@@ -90,6 +90,8 @@ interface ServerManagerLike {
   registerRecovered?(projectPath: string, client: unknown, state: ServerState): void;
 }
 
+type ExecFileLike = (file: string, args: string[], options: { cwd: string }) => Promise<{ stdout: string; stderr: string }>;
+
 interface CacheManagerLike {
   refresh(projectPath: string, client: unknown): Promise<void> | void;
   getSessions?(projectPath: string): unknown[];
@@ -151,6 +153,7 @@ export interface StartBotOptions {
   exit?: LifecycleHandlerOptions['exit'];
   now?: () => number;
   logger?: Pick<Logger, 'info' | 'warn' | 'error'>;
+  execFile?: ExecFileLike;
 }
 
 /** Runtime objects created or used during bot startup. */
@@ -310,6 +313,7 @@ export async function startBot(options: StartBotOptions = {}): Promise<StartedBo
     stateManager,
     streamHandler,
     threadResolver,
+    execFile: (options.execFile ?? execFileAsync) as ExecFileLike,
   });
   startupLogger.info('Discord runtime handlers registered');
 
@@ -379,6 +383,7 @@ interface RuntimeHandlerDependencies {
   stateManager: StateManagerLike;
   streamHandler: StreamHandlerLike;
   threadResolver: ThreadResolver;
+  execFile: ExecFileLike;
 }
 
 function registerDiscordRuntimeHandlers(client: DiscordClientLike, dependencies: RuntimeHandlerDependencies): void {
@@ -584,6 +589,10 @@ function createAutocompleteHandler(dependencies: RuntimeHandlerDependencies): Au
         .slice(0, 25);
     }
 
+    if (interaction.commandName === 'git' && focused.name === 'file' && interaction.options.getSubcommand() === 'diff') {
+      return await getGitDiffFileAutocompleteChoices(interaction, channelConfig.projectPath, value, dependencies.execFile);
+    }
+
     if (focused.name.startsWith('file') || focused.name === 'path') {
       return await getPathAutocompleteChoices(channelConfig.projectPath, value);
     }
@@ -606,6 +615,39 @@ function asSessionStreamSubscriber(streamHandler: StreamHandlerLike): Constructo
       await streamHandler.subscribe(threadId, sessionId, client, dedupeSet);
     },
   };
+}
+
+async function getGitDiffFileAutocompleteChoices(
+  interaction: AutocompleteInteraction,
+  projectPath: string,
+  value: string,
+  execFile: ExecFileLike,
+): Promise<Array<{ name: string; value: string }>> {
+  try {
+    const result = await execFile('git', buildGitDiffNameOnlyArgs(interaction), { cwd: projectPath });
+    return result.stdout
+      .trim()
+      .split('\n')
+      .filter((file) => file.length > 0)
+      .filter((file) => file.toLowerCase().includes(value.toLowerCase()))
+      .slice(0, 25)
+      .map((file) => ({ name: file, value: file }));
+  } catch {
+    return [];
+  }
+}
+
+function buildGitDiffNameOnlyArgs(interaction: AutocompleteInteraction): string[] {
+  const args = ['diff', '--name-only'];
+  const target = interaction.options.getString('target') ?? 'unstaged';
+  if (target === 'staged') {
+    args.push('--cached');
+  }
+  if (target === 'branch') {
+    args.push(interaction.options.getString('base') ?? 'main');
+  }
+
+  return args;
 }
 
 async function getPathAutocompleteChoices(projectPath: string, value: string): Promise<Array<{ name: string; value: string }>> {

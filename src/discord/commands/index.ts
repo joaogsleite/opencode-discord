@@ -100,6 +100,7 @@ const commandRegistry = new Map<string, CommandDefinition>([
               ),
           )
           .addStringOption((option) => option.setName('base').setDescription('Base branch or ref'))
+          .addStringOption((option) => option.setName('file').setDescription('Limit diff to a file path').setAutocomplete(true))
           .addBooleanOption((option) => option.setName('stat').setDescription('Show diff stat only')),
       )
       .addSubcommand((subcommand) => subcommand.setName('branch').setDescription('Show current branch'))

@@ -176,17 +176,26 @@ describe('createGitCommandHandler', () => {
 
   it('truncates extremely long git diff output after sending inline code blocks', async () => {
     const diff = 'a'.repeat(25_000);
-    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: diff, stderr: '' })) });
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => args.includes('--numstat')
+      ? { stdout: '12\t3\tsrc/index.ts\n0\t4\tsrc/git.ts\n', stderr: '' }
+      : { stdout: diff, stderr: '' }) });
     const interaction = createInteraction({ subcommand: 'diff' });
 
     await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
 
-    const sent = [
-      vi.mocked(interaction.editReply).mock.calls[0]?.[0],
-      ...vi.mocked(interaction.followUp).mock.calls.map((call) => call[0]),
-    ] as Array<{ content: string }>;
-    expect(sent.at(-1)?.content).toContain('... truncated');
-    expect(sent.every((message) => message.content.length <= 2000)).toBe(true);
+    expect(deps.execFile).toHaveBeenNthCalledWith(1, 'git', ['diff'], { cwd: '/repo' });
+    expect(deps.execFile).toHaveBeenNthCalledWith(2, 'git', ['diff', '--numstat'], { cwd: '/repo' });
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: 'Diff is too large to display inline. Re-run `/git diff file:<path>` to inspect one file.\n```\n+12 -3 src/index.ts\n+0 -4 src/git.ts\n```' });
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it('passes a file pathspec to git diff when file is provided', async () => {
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/src/index.ts b/src/index.ts\n', stderr: '' })) });
+    const interaction = createInteraction({ subcommand: 'diff', strings: { file: 'src/index.ts' } });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.execFile).toHaveBeenCalledWith('git', ['diff', '--', 'src/index.ts'], { cwd: '/repo' });
   });
 
   it('keeps non-diff git output inline', async () => {
