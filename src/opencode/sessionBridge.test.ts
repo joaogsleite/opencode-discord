@@ -176,6 +176,30 @@ describe('SessionBridge', () => {
     expect(streamSubscriber.subscribe).toHaveBeenCalledBefore(client.session.promptAsync as never);
   });
 
+  it('refreshes the stream subscription before every prompt with the same client', async () => {
+    const { bridge, stateManager, streamSubscriber } = createBridge(2000);
+    const client = createClient();
+    stateManager.sessions.set('thread-1', {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    });
+
+    await bridge.sendPrompt('thread-1', { client, content: 'first prompt' });
+    await bridge.sendPrompt('thread-1', { client, content: 'after archived idle' });
+
+    expect(streamSubscriber.subscribe).toHaveBeenCalledTimes(2);
+    expect(streamSubscriber.subscribe).toHaveBeenNthCalledWith(1, 'thread-1', 'session-1', client);
+    expect(streamSubscriber.subscribe).toHaveBeenNthCalledWith(2, 'thread-1', 'session-1', client);
+  });
+
   it('connects to an existing session, replays history, subscribes streams, and recovers gaps', async () => {
     const { bridge, stateManager, streamSubscriber } = createBridge(3000);
     const client = createClient({

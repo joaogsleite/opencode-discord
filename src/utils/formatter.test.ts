@@ -65,6 +65,14 @@ describe('splitMessage', () => {
     expect(result).toEqual([text]);
   });
 
+  it('normalizes indented code fences to top-level fences', () => {
+    const text = '2. **Scaffold the Electron + TypeScript app**\n\n   ```text\n   src/main\n   src/preload\n   ```';
+
+    const result = splitMessage(text);
+
+    expect(result).toEqual(['2. **Scaffold the Electron + TypeScript app**\n\n```text\n   src/main\n   src/preload\n```']);
+  });
+
   it('preserves four-backtick fences across splits', () => {
     const code = '````markdown\n```ts\nconst nested = true;\n```\n' + 'x\n'.repeat(300) + '````';
 

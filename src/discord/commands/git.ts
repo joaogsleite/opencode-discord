@@ -1,4 +1,6 @@
 import { execFile as nodeExecFile } from 'node:child_process';
+import { lstat as nodeLstat, readFile as nodeReadFile, readlink as nodeReadlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
@@ -12,6 +14,7 @@ interface CommandContext {
 
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
 type ExecResult = { stdout: string; stderr: string };
+type FileStat = { isSymbolicLink(): boolean };
 type ComponentInteractionLike = { customId: string; user?: { id: string }; reply(options: unknown): Promise<unknown>; update(options: unknown): Promise<unknown> };
 interface ComponentCollectorLike {
   on(event: 'collect', listener: (interaction: ComponentInteractionLike) => Promise<void>): void;
@@ -28,12 +31,18 @@ const MAX_INLINE_DIFF_LENGTH = 10_000;
 /** Dependencies for the /git command handler. */
 export interface GitCommandDependencies {
   execFile(file: string, args: string[], options: { cwd: string }): Promise<ExecResult>;
+  lstat(path: string): Promise<FileStat>;
+  readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  readlink(path: string): Promise<string>;
   createAttachment(content: string, name: string): unknown;
 }
 
 const execFileAsync = promisify(nodeExecFile) as (file: string, args: string[], options: { cwd: string }) => Promise<ExecResult>;
 const defaultDeps: GitCommandDependencies = {
   execFile: execFileAsync,
+  lstat: nodeLstat,
+  readFile: nodeReadFile,
+  readlink: nodeReadlink,
   createAttachment: (content, name) => new AttachmentBuilder(Buffer.from(content), { name }),
 };
 
@@ -61,7 +70,7 @@ export function createGitCommandHandler(deps: GitCommandDependencies = defaultDe
     const result = await runGit(deps, projectPath, args);
     const fallback = group === 'stash' && subcommand === 'list' ? 'No stashes.' : 'No output.';
     if (subcommand === 'diff') {
-      const diff = (result.stdout || result.stderr).trimEnd() || fallback;
+      const diff = await buildDisplayDiff(deps, projectPath, interaction, result, fallback);
       if (diff.length > MAX_INLINE_DIFF_LENGTH) {
         await sendLargeDiffSummary(interaction, deps, projectPath, args);
         return;
@@ -75,6 +84,56 @@ export function createGitCommandHandler(deps: GitCommandDependencies = defaultDe
   };
 }
 
+async function buildDisplayDiff(
+  deps: GitCommandDependencies,
+  cwd: string,
+  interaction: ChatInputCommandInteraction,
+  result: ExecResult,
+  fallback: string,
+): Promise<string> {
+  const diff = (result.stdout || result.stderr).trimEnd();
+  const untrackedDiff = shouldAppendUntrackedDiff(interaction) ? await buildUntrackedDiff(deps, cwd, interaction) : '';
+  return [diff, untrackedDiff].filter(Boolean).join('\n') || fallback;
+}
+
+function shouldAppendUntrackedDiff(interaction: ChatInputCommandInteraction): boolean {
+  return (interaction.options.getString('target') ?? 'unstaged') === 'unstaged';
+}
+
+async function buildUntrackedDiff(deps: GitCommandDependencies, cwd: string, interaction: ChatInputCommandInteraction): Promise<string> {
+  const file = interaction.options.getString('file');
+  const files = await listUntrackedFiles(deps, cwd, file);
+  const diffs = await Promise.all(files.map(async (path) => {
+    const file = await readUntrackedFile(deps, cwd, path);
+    return formatUntrackedFileDiff(path, file.content, file.mode);
+  }));
+  return diffs.join('\n');
+}
+
+async function listUntrackedFiles(deps: GitCommandDependencies, cwd: string, file: string | null): Promise<string[]> {
+  const args = ['ls-files', '--others', '--exclude-standard'];
+  if (file) {
+    args.push('--', file);
+  }
+
+  const result = await runGit(deps, cwd, args);
+  return result.stdout.split('\n').filter(Boolean);
+}
+
+async function readUntrackedFile(deps: GitCommandDependencies, cwd: string, path: string): Promise<{ content: string; mode: string }> {
+  const fullPath = join(cwd, path);
+  if ((await deps.lstat(fullPath)).isSymbolicLink()) {
+    return { content: await deps.readlink(fullPath), mode: '120000' };
+  }
+
+  return { content: await deps.readFile(fullPath, 'utf8'), mode: '100644' };
+}
+
+function formatUntrackedFileDiff(path: string, content: string, mode: string): string {
+  const additions = content.split('\n').filter((line, index, lines) => line || index < lines.length - 1).map((line) => `+${line}`);
+  return [`diff --git a/${path} b/${path}`, `new file mode ${mode}`, '--- /dev/null', `+++ b/${path}`, ...additions].join('\n');
+}
+
 async function sendSplitEditReply(interaction: ChatInputCommandInteraction, messages: string[]): Promise<void> {
   const [first = '```\n\n```', ...rest] = messages;
   await interaction.editReply({ content: first });
@@ -86,22 +145,32 @@ async function sendSplitEditReply(interaction: ChatInputCommandInteraction, mess
 async function sendLargeDiffSummary(interaction: ChatInputCommandInteraction, deps: GitCommandDependencies, cwd: string, diffArgs: string[]): Promise<void> {
   const statArgs = [...diffArgs.slice(0, 1), '--numstat', ...diffArgs.slice(1)];
   const result = await runGit(deps, cwd, statArgs);
-  const summary = formatDiffNumstat(result.stdout.trimEnd());
-  await interaction.editReply({ content: `Diff is too large to display inline. Re-run \`/git diff file:<path>\` to inspect one file.\n${formatCodeBlockMessage(summary, '')}` });
+  const trackedFiles = parseDiffNumstatFiles(result.stdout.trimEnd());
+  const untrackedFiles = shouldAppendUntrackedDiff(interaction) ? await listUntrackedFiles(deps, cwd, interaction.options.getString('file')) : [];
+  const summary = formatMarkdownFileList([...trackedFiles, ...untrackedFiles]);
+  await interaction.editReply({ content: `Diff is too large to display inline. Re-run \`/git diff file:<path>\` to inspect one file.\n\n${summary}` });
 }
 
-function formatDiffNumstat(output: string): string {
+function parseDiffNumstatFiles(output: string): string[] {
   if (!output) {
-    return 'No file changes.';
+    return [];
   }
 
   return output
     .split('\n')
     .map((line) => {
-      const [additions = '-', deletions = '-', file = ''] = line.split('\t');
-      return `+${additions} -${deletions} ${file}`.trimEnd();
+      const [, , file = ''] = line.split('\t');
+      return file;
     })
-    .join('\n');
+    .filter(Boolean);
+}
+
+function formatMarkdownFileList(files: string[]): string {
+  if (files.length === 0) {
+    return '- No file changes.';
+  }
+
+  return files.map((file) => `- ${file}`).join('\n');
 }
 
 function requireChannelConfig(context: CommandContext): ChannelConfig {

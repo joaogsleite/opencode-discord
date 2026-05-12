@@ -497,7 +497,7 @@ describe('startBot', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(parentChannel.threads.create).toHaveBeenCalledOnce();
-    expect(calls).toEqual(['subscribe:thread-new:cached']);
+    expect(calls).toEqual(['subscribe:thread-new:cached', 'subscribe:thread-new:cached']);
     expect(opencodeClient.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({ sessionID: 'session-new' }));
   });
 
@@ -788,6 +788,86 @@ describe('startBot', () => {
     expect(respond).toHaveBeenCalledWith([
       { name: 'src/index.ts', value: 'src/index.ts' },
       { name: 'src/git.ts', value: 'src/git.ts' },
+    ]);
+  });
+
+  it('includes untracked files in unstaged /git diff file autocomplete choices', async () => {
+    const state: BotState = { version: 1, servers: {}, sessions: {}, queues: {} };
+    const cacheManager = {
+      refresh: vi.fn(async () => undefined),
+      getSessions: vi.fn(() => []),
+      getAgents: vi.fn(() => []),
+      getModels: vi.fn(() => []),
+      getMcpStatus: vi.fn(() => ({})),
+    };
+    const discordClient = {
+      login: vi.fn(),
+      channels: { fetch: vi.fn() },
+      destroy: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const execFile = vi.fn(async (_file, args: string[]) => args[0] === 'ls-files'
+      ? { stdout: 'src/new.ts\ndocs/new.md\n', stderr: '' }
+      : { stdout: 'src/index.ts\n', stderr: '' });
+
+    await startBot({
+      configLoader: {
+        load: vi.fn(),
+        getConfig: vi.fn(() => ({
+          discordToken: 'token',
+          servers: [{ serverId: 'guild-1', channels: [{ channelId: 'channel-1', projectPath: '/project/one' }] }],
+        })),
+      },
+      stateManager: {
+        load: vi.fn(),
+        getState: vi.fn(() => state),
+        setServer: vi.fn(),
+        getServer: vi.fn(),
+        removeServer: vi.fn(),
+        getSession: vi.fn(),
+        setSession: vi.fn(),
+        removeSession: vi.fn(),
+        getQueue: vi.fn(() => []),
+        clearQueue: vi.fn(),
+      },
+      serverManager: {
+        ensureRunning: vi.fn(),
+        getClient: vi.fn(),
+      },
+      cacheManager,
+      streamHandler: { subscribe: vi.fn() },
+      createDiscordClient: vi.fn(() => discordClient),
+      deployCommands: vi.fn(),
+      getCommandDefinitions: vi.fn(() => []),
+      preflight: vi.fn(),
+      execFile,
+    });
+
+    const interactionListener = discordClient.on.mock.calls.find(([eventName]) => eventName === 'interactionCreate')?.[1] as ((interaction: unknown) => Promise<void> | void) | undefined;
+    const respond = vi.fn(async () => undefined);
+    await interactionListener?.({
+      id: 'interaction-1',
+      channelId: 'channel-1',
+      channel: null,
+      guildId: 'guild-1',
+      commandName: 'git',
+      options: {
+        getFocused: vi.fn(() => ({ name: 'file', value: 'src/' })),
+        getSubcommand: vi.fn(() => 'diff'),
+        getString: vi.fn((name: string) => name === 'target' ? 'unstaged' : null),
+      },
+      isChatInputCommand: () => false,
+      isAutocomplete: () => true,
+      respond,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(execFile).toHaveBeenNthCalledWith(1, 'git', ['diff', '--name-only'], { cwd: '/project/one' });
+    expect(execFile).toHaveBeenNthCalledWith(2, 'git', ['ls-files', '--others', '--exclude-standard'], { cwd: '/project/one' });
+    expect(respond).toHaveBeenCalledWith([
+      { name: 'src/index.ts', value: 'src/index.ts' },
+      { name: 'src/new.ts', value: 'src/new.ts' },
     ]);
   });
 

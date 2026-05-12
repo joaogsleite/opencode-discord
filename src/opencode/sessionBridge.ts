@@ -194,10 +194,6 @@ export class SessionBridge {
   }
 
   private async refreshSubscription(threadId: string, sessionId: string, client: OpencodeSessionClient): Promise<void> {
-    if (this.subscribedClients.get(threadId) === client) {
-      return;
-    }
-
     await this.streamSubscriber.subscribe(threadId, sessionId, client);
     this.subscribedClients.set(threadId, client);
   }

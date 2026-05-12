@@ -10,7 +10,7 @@ const ZERO_WIDTH_SPACE = '\u200b';
  * @returns Array of message chunks.
  */
 export function splitMessage(text: string): string[] {
-  const safeText = escapeInlineCodeFenceMarkers(text);
+  const safeText = escapeInlineCodeFenceMarkers(normalizeIndentedCodeFenceLines(text));
   if (safeText.length <= MAX_CHUNK_SIZE) {
     return [safeText];
   }
@@ -168,6 +168,13 @@ function escapeInlineCodeFenceMarkers(text: string): string {
   return text
     .split('\n')
     .map((line) => isCodeFenceLine(line) ? line : line.replaceAll('```', `\`${ZERO_WIDTH_SPACE}\`\``))
+    .join('\n');
+}
+
+function normalizeIndentedCodeFenceLines(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/^\s+(`{3,}[^`]*)$/, '$1'))
     .join('\n');
 }
 

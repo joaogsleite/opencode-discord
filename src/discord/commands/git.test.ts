@@ -32,6 +32,9 @@ function createInteraction(options: {
 function createDeps(overrides: Partial<GitCommandDependencies> = {}): GitCommandDependencies {
   return {
     execFile: vi.fn(async () => ({ stdout: ' M src/index.ts\n', stderr: '' })),
+    lstat: vi.fn(async () => ({ isSymbolicLink: () => false })),
+    readFile: vi.fn(async () => ''),
+    readlink: vi.fn(async () => ''),
     createAttachment: vi.fn((content: string, name: string) => ({ content, name })),
     ...overrides,
   };
@@ -146,7 +149,9 @@ describe('createGitCommandHandler', () => {
   });
 
   it('sends git diff output as an inline code block', async () => {
-    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/file.ts b/file.ts\n', stderr: '' })) });
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => args[0] === 'ls-files'
+      ? { stdout: '', stderr: '' }
+      : { stdout: 'diff --git a/file.ts b/file.ts\n', stderr: '' }) });
     const interaction = createInteraction({ subcommand: 'diff' });
 
     await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
@@ -156,9 +161,77 @@ describe('createGitCommandHandler', () => {
     expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/file.ts b/file.ts\n```' });
   });
 
+  it('appends untracked files to default git diff output as new file additions', async () => {
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => {
+      if (args[0] === 'diff') {
+        return { stdout: 'diff --git a/file.ts b/file.ts\n', stderr: '' };
+      }
+      if (args[0] === 'ls-files') {
+        return { stdout: 'notes.md\n', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    }), readFile: vi.fn(async () => 'first line\nsecond line\n') });
+    const interaction = createInteraction({ subcommand: 'diff' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.execFile).toHaveBeenNthCalledWith(1, 'git', ['diff'], { cwd: '/repo' });
+    expect(deps.execFile).toHaveBeenNthCalledWith(2, 'git', ['ls-files', '--others', '--exclude-standard'], { cwd: '/repo' });
+    expect(deps.readFile).toHaveBeenCalledWith('/repo/notes.md', 'utf8');
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/file.ts b/file.ts\ndiff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n+first line\n+second line\n```' });
+  });
+
+  it('does not append untracked files to staged git diff output', async () => {
+    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/file.ts b/file.ts\n', stderr: '' })) });
+    const interaction = createInteraction({ subcommand: 'diff', strings: { target: 'staged' } });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.execFile).toHaveBeenCalledTimes(1);
+    expect(deps.execFile).toHaveBeenCalledWith('git', ['diff', '--cached'], { cwd: '/repo' });
+  });
+
+  it('shows a selected untracked file as a new file diff', async () => {
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => {
+      if (args[0] === 'diff') {
+        return { stdout: '', stderr: '' };
+      }
+      if (args[0] === 'ls-files') {
+        return { stdout: 'notes.md\n', stderr: '' };
+      }
+      return { stdout: 'draft\n', stderr: '' };
+    }), readFile: vi.fn(async () => 'draft\n') });
+    const interaction = createInteraction({ subcommand: 'diff', strings: { file: 'notes.md' } });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.execFile).toHaveBeenNthCalledWith(1, 'git', ['diff', '--', 'notes.md'], { cwd: '/repo' });
+    expect(deps.execFile).toHaveBeenNthCalledWith(2, 'git', ['ls-files', '--others', '--exclude-standard', '--', 'notes.md'], { cwd: '/repo' });
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n+draft\n```' });
+  });
+
+  it('shows an untracked symlink as link text without reading the target file', async () => {
+    const deps = createDeps({
+      execFile: vi.fn(async (_file, args) => args[0] === 'ls-files'
+        ? { stdout: 'outside-link\n', stderr: '' }
+        : { stdout: '', stderr: '' }),
+      lstat: vi.fn(async () => ({ isSymbolicLink: () => true })),
+      readlink: vi.fn(async () => '/etc/passwd'),
+    });
+    const interaction = createInteraction({ subcommand: 'diff' });
+
+    await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(deps.readFile).not.toHaveBeenCalled();
+    expect(deps.readlink).toHaveBeenCalledWith('/repo/outside-link');
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: '```diff\ndiff --git a/outside-link b/outside-link\nnew file mode 120000\n--- /dev/null\n+++ b/outside-link\n+/etc/passwd\n```' });
+  });
+
   it('splits long git diff output across inline code block messages without truncating', async () => {
     const diff = `${'diff --git a/file.ts b/file.ts\n'.repeat(80)}final line`;
-    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: diff, stderr: '' })) });
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => args[0] === 'ls-files'
+      ? { stdout: '', stderr: '' }
+      : { stdout: diff, stderr: '' }) });
     const interaction = createInteraction({ subcommand: 'diff' });
 
     await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
@@ -174,23 +247,32 @@ describe('createGitCommandHandler', () => {
     expect(`${firstContent.content}\n${followUpContent.content}`).not.toContain('... truncated');
   });
 
-  it('truncates extremely long git diff output after sending inline code blocks', async () => {
+  it('summarizes extremely long git diff output as a markdown file list including untracked files', async () => {
     const diff = 'a'.repeat(25_000);
-    const deps = createDeps({ execFile: vi.fn(async (_file, args) => args.includes('--numstat')
-      ? { stdout: '12\t3\tsrc/index.ts\n0\t4\tsrc/git.ts\n', stderr: '' }
-      : { stdout: diff, stderr: '' }) });
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => {
+      if (args.includes('--numstat')) {
+        return { stdout: '12\t3\tsrc/index.ts\n0\t4\tsrc/git.ts\n', stderr: '' };
+      }
+      if (args[0] === 'ls-files') {
+        return { stdout: 'src/new.ts\n', stderr: '' };
+      }
+      return { stdout: diff, stderr: '' };
+    }) });
     const interaction = createInteraction({ subcommand: 'diff' });
 
     await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
 
     expect(deps.execFile).toHaveBeenNthCalledWith(1, 'git', ['diff'], { cwd: '/repo' });
-    expect(deps.execFile).toHaveBeenNthCalledWith(2, 'git', ['diff', '--numstat'], { cwd: '/repo' });
-    expect(interaction.editReply).toHaveBeenCalledWith({ content: 'Diff is too large to display inline. Re-run `/git diff file:<path>` to inspect one file.\n```\n+12 -3 src/index.ts\n+0 -4 src/git.ts\n```' });
+    expect(deps.execFile).toHaveBeenNthCalledWith(2, 'git', ['ls-files', '--others', '--exclude-standard'], { cwd: '/repo' });
+    expect(deps.execFile).toHaveBeenNthCalledWith(3, 'git', ['diff', '--numstat'], { cwd: '/repo' });
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: 'Diff is too large to display inline. Re-run `/git diff file:<path>` to inspect one file.\n\n- src/index.ts\n- src/git.ts\n- src/new.ts' });
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
 
   it('passes a file pathspec to git diff when file is provided', async () => {
-    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/src/index.ts b/src/index.ts\n', stderr: '' })) });
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => args[0] === 'ls-files'
+      ? { stdout: '', stderr: '' }
+      : { stdout: 'diff --git a/src/index.ts b/src/index.ts\n', stderr: '' }) });
     const interaction = createInteraction({ subcommand: 'diff', strings: { file: 'src/index.ts' } });
 
     await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
@@ -209,7 +291,9 @@ describe('createGitCommandHandler', () => {
   });
 
   it('escapes triple backticks inside git diff output code blocks', async () => {
-    const deps = createDeps({ execFile: vi.fn(async () => ({ stdout: 'diff --git a/file.md b/file.md\n+```ts\n+inside\n+```\n', stderr: '' })) });
+    const deps = createDeps({ execFile: vi.fn(async (_file, args) => args[0] === 'ls-files'
+      ? { stdout: '', stderr: '' }
+      : { stdout: 'diff --git a/file.md b/file.md\n+```ts\n+inside\n+```\n', stderr: '' }) });
     const interaction = createInteraction({ subcommand: 'diff' });
 
     await createGitCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });

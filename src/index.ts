@@ -624,10 +624,12 @@ async function getGitDiffFileAutocompleteChoices(
   execFile: ExecFileLike,
 ): Promise<Array<{ name: string; value: string }>> {
   try {
-    const result = await execFile('git', buildGitDiffNameOnlyArgs(interaction), { cwd: projectPath });
-    return result.stdout
-      .trim()
-      .split('\n')
+    const results = [await execFile('git', buildGitDiffNameOnlyArgs(interaction), { cwd: projectPath })];
+    if (shouldIncludeUntrackedDiffFiles(interaction)) {
+      results.push(await execFile('git', ['ls-files', '--others', '--exclude-standard'], { cwd: projectPath }));
+    }
+
+    return [...new Set(results.flatMap((result) => result.stdout.trim().split('\n')))]
       .filter((file) => file.length > 0)
       .filter((file) => file.toLowerCase().includes(value.toLowerCase()))
       .slice(0, 25)
@@ -635,6 +637,10 @@ async function getGitDiffFileAutocompleteChoices(
   } catch {
     return [];
   }
+}
+
+function shouldIncludeUntrackedDiffFiles(interaction: AutocompleteInteraction): boolean {
+  return (interaction.options.getString('target') ?? 'unstaged') === 'unstaged';
 }
 
 function buildGitDiffNameOnlyArgs(interaction: AutocompleteInteraction): string[] {
