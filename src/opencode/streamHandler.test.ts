@@ -1066,6 +1066,89 @@ describe('StreamHandler', () => {
     expect(sends.at(-1)).toContain('Stream disconnected after 3 retries.');
   });
 
+  it('uses bounded exponential retry delays for empty reconnect attempts', async () => {
+    const { thread } = createThread();
+    const delays: number[] = [];
+    const handler = createHandler({
+      retryDelayMs: 100,
+      maxRetryDelayMs: 1_000,
+      maxRetries: 3,
+      setTimeout: ((callback: () => void, ms: number) => {
+        delays.push(ms);
+        return setTimeout(callback, 0);
+      }) as unknown as typeof setTimeout,
+      clearTimeout,
+    }, thread);
+    const client = createClient([stream([]), stream([]), stream([]), stream([])]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    await handler.waitForIdle('thread-1');
+
+    expect(delays).toEqual([100, 200, 400]);
+  });
+
+  it('wakes a retry delay immediately when unsubscribed', async () => {
+    const { thread } = createThread();
+    const handler = createHandler({ retryDelayMs: 60_000, maxRetries: 3 }, thread);
+    const client = createClient([failingStream(new Error('disconnect'))]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+    handler.unsubscribe('thread-1');
+
+    await expect(handler.waitForIdle('thread-1')).resolves.toBeUndefined();
+  });
+
+  it('reports live stream status for active subscriptions', async () => {
+    const { thread } = createThread();
+    const handler = createHandler({ now: () => 10_000 }, thread);
+    const client = createClient([stream([textDelta('hello')])]);
+
+    await handler.subscribe('thread-1', 'session-1', client, undefined, '/repo');
+    await handler.waitForIdle('thread-1');
+
+    expect(handler.getStatus('thread-1')).toMatchObject({
+      threadId: 'thread-1',
+      sessionId: 'session-1',
+      projectPath: '/repo',
+      state: 'idle',
+      lastEventAt: 10_000,
+      failures: 0,
+    });
+  });
+
+  it('reports retrying stream status after a stream failure', async () => {
+    let now = 1_000;
+    const { thread } = createThread();
+    let resolveSleepStarted: () => void = () => undefined;
+    const sleepStarted = new Promise<void>((resolve) => {
+      resolveSleepStarted = resolve;
+    });
+    const handler = createHandler({
+      retryDelayMs: 60_000,
+      maxRetries: 3,
+      now: () => now,
+      setTimeout: ((callback: () => void) => {
+        resolveSleepStarted();
+        return setTimeout(callback, 60_000);
+      }) as unknown as typeof setTimeout,
+      clearTimeout,
+    }, thread);
+    const client = createClient([failingStream(new Error('disconnect'))]);
+
+    await handler.subscribe('thread-1', 'session-1', client);
+
+    await sleepStarted;
+    now = 2_000;
+
+    expect(handler.getStatus('thread-1')).toMatchObject({
+      state: 'retrying',
+      failures: 1,
+      lastErrorAt: 1_000,
+    });
+
+    handler.unsubscribe('thread-1');
+  });
+
   it('contains Discord send failures from the background pump', async () => {
     const thread: StreamThread = {
       send: vi.fn(async () => {

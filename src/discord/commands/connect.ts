@@ -3,6 +3,7 @@ import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import type { BotState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface InteractionContext {
   correlationId: string;
@@ -17,7 +18,7 @@ interface StateReader {
 
 interface ThreadLike {
   id: string;
-  send(content: string): Promise<unknown>;
+  send(content: unknown): Promise<unknown>;
 }
 
 interface ThreadCreatableChannel {
@@ -63,7 +64,7 @@ export function createConnectCommandHandler(deps: ConnectCommandDependencies): C
       historyLimit: channelConfig.connectHistoryLimit,
       thread,
     });
-    await interaction.editReply({ content: `Connected thread ${thread.id} to session ${sessionId}.` });
+    await interaction.editReply(suppressLinkPreviews({ content: `Connected thread ${thread.id} to session ${sessionId}.` }));
   };
 }
 

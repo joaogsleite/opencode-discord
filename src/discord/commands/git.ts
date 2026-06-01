@@ -6,6 +6,7 @@ import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, Messag
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { formatCodeBlockMessage, splitCodeBlockMessages } from '../../utils/formatter.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext {
   correlationId: string;
@@ -80,7 +81,7 @@ export function createGitCommandHandler(deps: GitCommandDependencies = defaultDe
       return;
     }
 
-    await interaction.editReply({ content: formatGitOutput(result.stdout || result.stderr, subcommand === 'diff' ? 'diff' : '', fallback) });
+    await interaction.editReply(suppressLinkPreviews({ content: formatGitOutput(result.stdout || result.stderr, subcommand === 'diff' ? 'diff' : '', fallback) }));
   };
 }
 
@@ -136,9 +137,9 @@ function formatUntrackedFileDiff(path: string, content: string, mode: string): s
 
 async function sendSplitEditReply(interaction: ChatInputCommandInteraction, messages: string[]): Promise<void> {
   const [first = '```\n\n```', ...rest] = messages;
-  await interaction.editReply({ content: first });
+  await interaction.editReply(suppressLinkPreviews({ content: first }));
   for (const content of rest) {
-    await interaction.followUp({ content });
+    await interaction.followUp(suppressLinkPreviews({ content }));
   }
 }
 
@@ -148,7 +149,7 @@ async function sendLargeDiffSummary(interaction: ChatInputCommandInteraction, de
   const trackedFiles = parseDiffNumstatFiles(result.stdout.trimEnd());
   const untrackedFiles = shouldAppendUntrackedDiff(interaction) ? await listUntrackedFiles(deps, cwd, interaction.options.getString('file')) : [];
   const summary = formatMarkdownFileList([...trackedFiles, ...untrackedFiles]);
-  await interaction.editReply({ content: `Diff is too large to display inline. Re-run \`/git diff file:<path>\` to inspect one file.\n\n${summary}` });
+  await interaction.editReply(suppressLinkPreviews({ content: `Diff is too large to display inline. Re-run \`/git diff file:<path>\` to inspect one file.\n\n${summary}` }));
 }
 
 function parseDiffNumstatFiles(output: string): string[] {
@@ -313,27 +314,27 @@ async function confirmResetHard(interaction: ChatInputCommandInteraction, deps: 
     new ButtonBuilder().setCustomId('git-reset-hard-confirm').setLabel('Reset hard').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('git-reset-hard-cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
   );
-  const message = await interaction.reply({ content: 'Confirm `git reset --hard`?', components: [row], fetchReply: true });
+  const message = await interaction.reply(suppressLinkPreviews({ content: 'Confirm `git reset --hard`?', components: [row], fetchReply: true }));
   const collectorMessage = message as unknown as Partial<MessageWithCollector>;
   const collector = collectorMessage.createMessageComponentCollector?.({ time: 30_000 });
 
   collector?.on('collect', async (componentInteraction) => {
     if (componentInteraction.user?.id !== interaction.user.id) {
-      await componentInteraction.reply({ content: 'Only the user who requested this reset can confirm it.', flags: MessageFlags.Ephemeral });
+      await componentInteraction.reply(suppressLinkPreviews({ content: 'Only the user who requested this reset can confirm it.', flags: MessageFlags.Ephemeral }));
       return;
     }
 
     if (componentInteraction.customId !== 'git-reset-hard-confirm') {
-      await componentInteraction.update({ content: 'Reset cancelled.', components: [] });
+      await componentInteraction.update(suppressLinkPreviews({ content: 'Reset cancelled.', components: [] }));
       return;
     }
 
     await runGit(deps, cwd, ['reset', '--hard']);
-    await componentInteraction.update({ content: 'Hard reset complete.', components: [] });
+    await componentInteraction.update(suppressLinkPreviews({ content: 'Hard reset complete.', components: [] }));
   });
   collector?.on('end', async (_collected, reason) => {
     if (reason === 'time' && collectorMessage.edit) {
-      await collectorMessage.edit({ content: 'Reset confirmation expired.', components: [] });
+      await collectorMessage.edit(suppressLinkPreviews({ content: 'Reset confirmation expired.', components: [] }));
     }
   });
 }

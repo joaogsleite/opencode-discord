@@ -13,7 +13,7 @@ const commandRegistry = new Map<string, CommandDefinition>([
       .setName('new')
       .setDescription('Create a new OpenCode session')
       .addStringOption((option) =>
-        option.setName('prompt').setDescription('Initial prompt').setRequired(true),
+        option.setName('prompt').setDescription('Initial prompt'),
       )
       .addStringOption((option) =>
         option.setName('agent').setDescription('Agent to use').setAutocomplete(true),
@@ -187,6 +187,22 @@ const commandRegistry = new Map<string, CommandDefinition>([
           .addStringOption((option) =>
             option.setName('name').setDescription('MCP server name').setRequired(true).setAutocomplete(true),
           ),
+      ),
+  ],
+  [
+    'cmd',
+    new SlashCommandBuilder()
+      .setName('cmd')
+      .setDescription('Run OpenCode custom commands')
+      .addSubcommand((subcommand) => subcommand.setName('list').setDescription('List OpenCode custom commands'))
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName('run')
+          .setDescription('Run an OpenCode custom command')
+          .addStringOption((option) =>
+            option.setName('name').setDescription('Command to run').setRequired(true).setAutocomplete(true),
+          )
+          .addStringOption((option) => option.setName('prompt').setDescription('Command prompt')),
       ),
   ],
   ['diff', new SlashCommandBuilder().setName('diff').setDescription('Show session diff')],

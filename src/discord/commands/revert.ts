@@ -1,6 +1,7 @@
 import type { ChatInputCommandInteraction } from 'discord.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -30,7 +31,7 @@ export function createRevertCommandHandler(deps: RevertCommandDependencies): Com
     }
 
     await client.session.revert({ sessionID: session.sessionId, messageID });
-    await interaction.reply({ content: `Reverted message \`${messageID}\`.` });
+    await interaction.reply(suppressLinkPreviews({ content: `Reverted message \`${messageID}\`.` }));
   };
 }
 
@@ -44,7 +45,7 @@ export function createUnrevertCommandHandler(deps: RevertCommandDependencies): C
     const session = requireThreadSession(interaction, deps.stateManager);
     const client = requireClient(deps.serverManager, session.projectPath);
     await client.session.unrevert({ sessionID: session.sessionId });
-    await interaction.reply({ content: 'Last revert undone.' });
+    await interaction.reply(suppressLinkPreviews({ content: 'Last revert undone.' }));
   };
 }
 

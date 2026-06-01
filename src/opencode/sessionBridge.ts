@@ -1,5 +1,6 @@
 import type { FilePartInput, TextPartInput } from '@opencode-ai/sdk/v2';
 import type { SessionState } from '../state/types.js';
+import { suppressLinkPreviews } from '../discord/messageOptions.js';
 import { BotError, ErrorCode } from '../utils/errors.js';
 import { formatHistoryMessage } from '../utils/formatter.js';
 
@@ -81,7 +82,7 @@ export interface SendPromptOptions {
 
 /** Minimal Discord thread-like history replay target. */
 export interface HistoryThreadLike {
-  send(content: string): Promise<unknown>;
+  send(content: string | { content: string; flags: number }): Promise<unknown>;
 }
 
 /** Options for connecting a Discord thread to an existing session. */
@@ -149,6 +150,7 @@ export class SessionBridge {
     ];
     const model = parseModel(options.model ?? session.model);
 
+    await this.verifySession(options.client, session.sessionId);
     await this.refreshSubscription(threadId, session.sessionId, options.client);
     const result = await options.client.session.promptAsync({
       sessionID: session.sessionId,
@@ -190,7 +192,7 @@ export class SessionBridge {
       // Gap recovery is also best-effort.
     }
 
-    await options.thread.send(`Connected to session \`${options.sessionId}\`.`);
+    await options.thread.send(suppressLinkPreviews(`Connected to session \`${options.sessionId}\`.`));
   }
 
   private async refreshSubscription(threadId: string, sessionId: string, client: OpencodeSessionClient): Promise<void> {
@@ -268,7 +270,7 @@ export class SessionBridge {
 
       const content = getMessageContent(message);
       if (content) {
-        await thread.send(formatHistoryMessage(getMessageRole(message), content));
+        await thread.send(suppressLinkPreviews(formatHistoryMessage(getMessageRole(message), content)));
       }
 
       if (messageId) {

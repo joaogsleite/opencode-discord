@@ -22,7 +22,7 @@ describe('getCommandDefinitions', () => {
   it('returns SlashCommandBuilder instances for all registered commands', () => {
     const commands = getCommandDefinitions();
 
-    expect(commands).toHaveLength(24);
+    expect(commands).toHaveLength(25);
     expect(commands.every((command) => command instanceof SlashCommandBuilder)).toBe(true);
     expect(commands.map((command) => command.name)).toEqual([
       'new',
@@ -41,6 +41,7 @@ describe('getCommandDefinitions', () => {
       'download',
       'restart',
       'mcp',
+      'cmd',
       'diff',
       'revert',
       'unrevert',
@@ -58,7 +59,7 @@ describe('getCommandDefinitions', () => {
     const newCommand = commandJson.find((command) => command.name === 'new');
     expect(newCommand?.options).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'prompt', type: 3, required: true }),
+        expect.objectContaining({ name: 'prompt', type: 3, required: false }),
         expect.objectContaining({ name: 'agent', type: 3, autocomplete: true }),
         expect.objectContaining({ name: 'title', type: 3 }),
       ]),
@@ -103,6 +104,17 @@ describe('getCommandDefinitions', () => {
         ]),
       }),
     );
+
+    const cmdCommand = commandJson.find((command) => command.name === 'cmd');
+    const cmdRun = cmdCommand?.options?.find((option) => option.name === 'run');
+    expect(cmdCommand?.options).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'list' })]));
+    expect(cmdRun).toEqual(expect.objectContaining({
+      name: 'run',
+      options: expect.arrayContaining([
+        expect.objectContaining({ name: 'name', required: true, autocomplete: true }),
+        expect.objectContaining({ name: 'prompt', required: false }),
+      ]),
+    }));
 
     const contextCommand = commandJson.find((command) => command.name === 'context');
     const contextAdd = contextCommand?.options?.find((option) => option.name === 'add');

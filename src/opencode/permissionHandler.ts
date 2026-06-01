@@ -1,3 +1,4 @@
+import { suppressLinkPreviews } from '../discord/messageOptions.js';
 import { BotError, ErrorCode } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -35,7 +36,7 @@ export interface PermissionThread {
    * @param payload - Message content or embed payload.
    * @returns Sent Discord message.
    */
-  send(payload: string | { embeds?: unknown[]; components?: unknown[]; content?: string }): Promise<PermissionMessage>;
+  send(payload: string | { embeds?: unknown[]; components?: unknown[]; content?: string; flags?: number }): Promise<PermissionMessage>;
 }
 
 /** Discord message subset required by permission handling. */
@@ -52,7 +53,7 @@ export interface PermissionMessage {
    * @param payload - Replacement message payload.
    * @returns Discord API edit result.
    */
-  edit?(payload: { embeds?: unknown[]; components?: unknown[]; content?: string }): Promise<unknown>;
+  edit?(payload: { embeds?: unknown[]; components?: unknown[]; content?: string; flags?: number }): Promise<unknown>;
 }
 
 /** Discord component collector subset required by permission handling. */
@@ -235,7 +236,7 @@ export class PermissionHandler {
 
   private async postInteractiveRequest(thread: PermissionThread, request: PermissionRequest, client: PermissionClient): Promise<PermissionMessage | undefined> {
     try {
-      return await thread.send({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] });
+      return await thread.send(suppressLinkPreviews({ embeds: [this.createEmbed(request)], components: [this.createActionRow()] }));
     } catch (error) {
       logger.warn('Permission prompt posting failed', { code: ErrorCode.DISCORD_API_ERROR, requestID: request.id, error });
       try {

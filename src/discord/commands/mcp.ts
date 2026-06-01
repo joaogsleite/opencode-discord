@@ -1,6 +1,7 @@
 import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string; channelConfig?: ChannelConfig }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -21,13 +22,13 @@ export interface McpCommandDependencies {
 export function createMcpCommandHandler(deps: McpCommandDependencies): CommandHandler {
   return async (interaction, context): Promise<void> => {
     const channelConfig = requireChannelConfig(context);
-    const client = await deps.serverManager.ensureRunning(channelConfig.projectPath) as McpClient;
     const subcommand = interaction.options.getSubcommand();
     await interaction.deferReply();
+    const client = await deps.serverManager.ensureRunning(channelConfig.projectPath) as McpClient;
 
     if (subcommand === 'list') {
       const status = normalizeRecord(await client.mcp.status());
-      await interaction.editReply({ embeds: [formatMcpStatus(status)] });
+      await interaction.editReply(suppressLinkPreviews({ embeds: [formatMcpStatus(status)] }));
       return;
     }
 
@@ -40,7 +41,7 @@ export function createMcpCommandHandler(deps: McpCommandDependencies): CommandHa
         lines.push(`${mcpName}: ${ok === false ? 'failed' : 'reconnected'}`);
       }
       await refreshCacheBestEffort(deps, channelConfig.projectPath, client);
-      await interaction.editReply({ content: boundReply(lines.join('\n') || 'No MCP servers found.') });
+      await interaction.editReply(suppressLinkPreviews({ content: boundReply(lines.join('\n') || 'No MCP servers found.') }));
       return;
     }
 
@@ -51,7 +52,7 @@ export function createMcpCommandHandler(deps: McpCommandDependencies): CommandHa
         throw new BotError(ErrorCode.MCP_NOT_FOUND, `MCP server not found: ${name}`, { name });
       }
       await refreshCacheBestEffort(deps, channelConfig.projectPath, client);
-      await interaction.editReply({ content: `Disconnected MCP server \`${name}\`.` });
+      await interaction.editReply(suppressLinkPreviews({ content: `Disconnected MCP server \`${name}\`.` }));
       return;
     }
 

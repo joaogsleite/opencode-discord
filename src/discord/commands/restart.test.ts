@@ -57,6 +57,43 @@ describe('createRestartCommandHandler', () => {
     expect(component.update).toHaveBeenCalledWith({ content: 'OpenCode server restarted for `/repo`.', components: [] });
   });
 
+  it('defers the confirmation update before restarting OpenCode', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<void>>();
+    const message = { createMessageComponentCollector: vi.fn(() => ({ on: vi.fn((event: string, handler: (...args: unknown[]) => Promise<void>) => handlers.set(event, handler)) })) };
+    const deps = createDeps();
+    const client = { session: { abort: vi.fn(async () => undefined) } };
+    deps.serverManager.ensureRunning = vi.fn(async () => client);
+    const interaction = createInteraction(message, 'user-1');
+    const component = {
+      customId: 'restart-confirm',
+      user: { id: 'user-1' },
+      deferUpdate: vi.fn(async () => undefined),
+      editReply: vi.fn(async () => undefined),
+      reply: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
+    };
+
+    await createRestartCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+    await handlers.get('collect')?.(component);
+
+    expect(component.deferUpdate).toHaveBeenCalledBefore(vi.mocked(deps.serverManager.shutdown));
+  });
+
+  it('does not abort active sessions that will be reconnected after restart', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => Promise<void>>();
+    const message = { createMessageComponentCollector: vi.fn(() => ({ on: vi.fn((event: string, handler: (...args: unknown[]) => Promise<void>) => handlers.set(event, handler)) })) };
+    const deps = createDeps();
+    const interaction = createInteraction(message, 'user-1');
+    const component = { customId: 'restart-confirm', user: { id: 'user-1' }, reply: vi.fn(async () => undefined), update: vi.fn(async () => undefined) };
+
+    await createRestartCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+    await handlers.get('collect')?.(component);
+
+    const oldClient = deps.serverManager.getClient('/repo') as { session: { abort: ReturnType<typeof vi.fn> } };
+    expect(oldClient.session.abort).not.toHaveBeenCalled();
+    expect(deps.streamHandler.subscribe).toHaveBeenCalledWith('thread-1', 'session-thread-1', oldClient, expect.any(Set), '/repo');
+  });
+
   it('handles restart failures inside the confirmation collector with a bounded user-facing update and structured log', async () => {
     const handlers = new Map<string, (...args: unknown[]) => Promise<void>>();
     const message = { createMessageComponentCollector: vi.fn(() => ({ on: vi.fn((event: string, handler: (...args: unknown[]) => Promise<void>) => handlers.set(event, handler)) })) };

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { resolveSafePath as defaultResolveSafePath } from '../../utils/filesystem.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string; channelConfig?: ChannelConfig }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -90,19 +91,19 @@ export function createContextCommandHandler(deps: ContextCommandDependencies): C
         .filter((file): file is string => Boolean(file))]
         .map((file) => resolver(channelConfig.projectPath, file));
       deps.buffer.add(threadId, files);
-      await interaction.reply({ content: boundedFileList('Added to context:', files), flags: MessageFlags.Ephemeral });
+      await interaction.reply(suppressLinkPreviews({ content: boundedFileList('Added to context:', files), flags: MessageFlags.Ephemeral }));
       return;
     }
 
     if (subcommand === 'list') {
       const files = deps.buffer.list(threadId);
-      await interaction.reply({ content: files.length ? boundedFileList('Context buffer:', files) : 'No files in context buffer.', flags: MessageFlags.Ephemeral });
+      await interaction.reply(suppressLinkPreviews({ content: files.length ? boundedFileList('Context buffer:', files) : 'No files in context buffer.', flags: MessageFlags.Ephemeral }));
       return;
     }
 
     if (subcommand === 'clear') {
       deps.buffer.clear(threadId);
-      await interaction.reply({ content: 'Context buffer cleared.', flags: MessageFlags.Ephemeral });
+      await interaction.reply(suppressLinkPreviews({ content: 'Context buffer cleared.', flags: MessageFlags.Ephemeral }));
       return;
     }
 

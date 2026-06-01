@@ -3,14 +3,14 @@ import type { ChannelConfig } from '../../config/types.js';
 import type { BotState, SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { createLogger, type Logger } from '../../utils/logger.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string; channelConfig?: ChannelConfig }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
-interface RestartClient { session?: { abort(options: { sessionID: string }): Promise<unknown> } }
-interface ComponentInteractionLike { customId: string; user?: { id: string }; reply(options: unknown): Promise<unknown>; update(options: unknown): Promise<unknown> }
+interface ComponentInteractionLike { customId: string; user?: { id: string }; deferUpdate?(): Promise<unknown>; editReply?(options: unknown): Promise<unknown>; reply(options: unknown): Promise<unknown>; update(options: unknown): Promise<unknown> }
 interface ComponentCollectorLike { on(event: 'collect', listener: (interaction: ComponentInteractionLike) => Promise<void>): void; on(event: 'end', listener: (collected: unknown, reason: string) => Promise<void>): void }
 interface MessageWithCollector { createMessageComponentCollector(options: { time: number }): ComponentCollectorLike; edit(options: unknown): Promise<unknown> }
-interface ThreadLike { send(content: string): Promise<unknown> }
+interface ThreadLike { send(content: unknown): Promise<unknown> }
 const logger = createLogger('RestartCommand');
 
 /** Dependencies for the /restart command handler. */
@@ -35,43 +35,42 @@ export function createRestartCommandHandler(deps: RestartCommandDependencies): C
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('restart-confirm').setLabel('Restart').setStyle(ButtonStyle.Danger),
     );
-    const message = await interaction.reply({
+    const message = await interaction.reply(suppressLinkPreviews({
       content: `This will restart the OpenCode server for ${channelConfig.projectPath}. All active sessions (${sessions.length}) will be interrupted.`,
       components: [row],
       fetchReply: true,
-    });
+    }));
     const collectorMessage = message as unknown as Partial<MessageWithCollector>;
     const collector = collectorMessage.createMessageComponentCollector?.({ time: 30_000 });
     let completed = false;
 
     collector?.on('collect', async (componentInteraction) => {
       if (componentInteraction.user?.id !== interaction.user.id) {
-        await componentInteraction.reply({ content: 'Only the user who requested this restart can confirm it.', flags: MessageFlags.Ephemeral });
+        await componentInteraction.reply(suppressLinkPreviews({ content: 'Only the user who requested this restart can confirm it.', flags: MessageFlags.Ephemeral }));
         return;
       }
       if (componentInteraction.customId !== 'restart-confirm') return;
       try {
+        await componentInteraction.deferUpdate?.();
         await restartProject(deps, channelConfig.projectPath, sessions);
         completed = true;
-        await componentInteraction.update({ content: `OpenCode server restarted for \`${channelConfig.projectPath}\`.`, components: [] });
+        await updateConfirmation(componentInteraction, { content: `OpenCode server restarted for \`${channelConfig.projectPath}\`.`, components: [] });
       } catch (err) {
         completed = true;
         const activeLogger = deps.logger ?? logger;
         activeLogger.error('Restart confirmation failed', { correlationId: context.correlationId, projectPath: channelConfig.projectPath, err });
-        await componentInteraction.update({ content: `Restart failed. *(ref: ${context.correlationId})*`, components: [] });
+        await updateConfirmation(componentInteraction, { content: `Restart failed. *(ref: ${context.correlationId})*`, components: [] });
       }
     });
 
     collector?.on('end', async (_collected, reason) => {
-      if (!completed && reason === 'time' && collectorMessage.edit) await collectorMessage.edit({ content: 'Restart confirmation expired.', components: [] });
+      if (!completed && reason === 'time' && collectorMessage.edit) await collectorMessage.edit(suppressLinkPreviews({ content: 'Restart confirmation expired.', components: [] }));
     });
   };
 }
 
 async function restartProject(deps: RestartCommandDependencies, projectPath: string, sessions: Array<{ threadId: string; session: SessionState }>): Promise<void> {
-  const oldClient = deps.serverManager.getClient(projectPath) as RestartClient | undefined;
-  for (const { threadId, session } of sessions) {
-    try { await oldClient?.session?.abort({ sessionID: session.sessionId }); } catch { /* best effort before restart */ }
+  for (const { threadId } of sessions) {
     deps.streamHandler.unsubscribe(threadId);
   }
 
@@ -81,8 +80,17 @@ async function restartProject(deps: RestartCommandDependencies, projectPath: str
 
   for (const { threadId, session } of sessions) {
     await deps.streamHandler.subscribe(threadId, session.sessionId, client, new Set<string>(), projectPath);
-    await deps.getThread(threadId)?.send('Server restarted. Session reconnected.');
+    await deps.getThread(threadId)?.send(suppressLinkPreviews('Server restarted. Session reconnected.'));
   }
+}
+
+async function updateConfirmation(componentInteraction: ComponentInteractionLike, options: { content: string; components: [] }): Promise<void> {
+  if (componentInteraction.editReply) {
+    await componentInteraction.editReply(suppressLinkPreviews(options));
+    return;
+  }
+
+  await componentInteraction.update(suppressLinkPreviews(options));
 }
 
 function getActiveProjectSessions(sessions: Record<string, SessionState>, projectPath: string): Array<{ threadId: string; session: SessionState }> {

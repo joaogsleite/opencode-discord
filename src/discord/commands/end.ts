@@ -3,6 +3,7 @@ import type { ChannelConfig } from '../../config/types.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface InteractionContext {
   correlationId: string;
@@ -56,7 +57,7 @@ export function createEndCommandHandler(deps: EndCommandDependencies): CommandHa
       // Attachment cleanup is best-effort; ending the session must still complete.
     }
     deps.stateManager.removeSession(threadId);
-    await interaction.editReply({ content: `Session \`${session.sessionId}\` ended.` });
+    await interaction.editReply(suppressLinkPreviews({ content: `Session \`${session.sessionId}\` ended.` }));
     await (interaction.channel as ArchivableThread).setArchived(true);
   };
 }

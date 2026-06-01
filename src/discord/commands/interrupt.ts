@@ -2,6 +2,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext {
   correlationId: string;
@@ -42,7 +43,7 @@ export function createInterruptCommandHandler(deps: InterruptCommandDependencies
     await interaction.deferReply();
     await deps.sessionBridge.abortSession(threadId, client);
     deps.stateManager.clearQueue(threadId);
-    await interaction.editReply({ content: 'Session interrupted and queue cleared.' });
+    await interaction.editReply(suppressLinkPreviews({ content: 'Session interrupted and queue cleared.' }));
   };
 }
 

@@ -2,6 +2,7 @@ import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import type { BotState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface InteractionContext {
   correlationId: string;
@@ -16,9 +17,14 @@ interface StatusStateManager {
   getState(): BotState;
 }
 
+interface StreamStatusProvider {
+  getStatus(threadId: string): { state: string; failures: number } | undefined;
+}
+
 /** Dependencies for the /status command handler. */
 export interface StatusCommandDependencies {
   stateManager: StatusStateManager;
+  streamStatusProvider?: StreamStatusProvider;
 }
 
 /**
@@ -46,21 +52,23 @@ export function createStatusCommandHandler(deps: StatusCommandDependencies): Com
       .addFields(
         { name: 'Server', value: server ? `${server.status} (${server.url})` : 'not running', inline: false },
         { name: 'Active Sessions', value: String(sessions.length), inline: true },
-        { name: 'Threads', value: formatSessions(sessions, state), inline: false },
+        { name: 'Threads', value: formatSessions(sessions, state, deps.streamStatusProvider), inline: false },
       );
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply(suppressLinkPreviews({ embeds: [embed] }));
   };
 }
 
-function formatSessions(sessions: Array<[string, BotState['sessions'][string]]>, state: BotState): string {
+function formatSessions(sessions: Array<[string, BotState['sessions'][string]]>, state: BotState, streamStatusProvider?: StreamStatusProvider): string {
   if (sessions.length === 0) {
     return 'No active sessions.';
   }
 
   const lines: string[] = [];
   for (const [threadId, session] of sessions) {
-    const next = `${threadId}: ${session.agent} by <@${session.createdBy}> (queue ${state.queues[threadId]?.length ?? 0})`;
+    const stream = streamStatusProvider?.getStatus(threadId);
+    const streamText = stream ? `, stream ${stream.state}, failures ${stream.failures}` : ', stream not subscribed';
+    const next = `${threadId}: ${session.agent} by <@${session.createdBy}> (queue ${state.queues[threadId]?.length ?? 0}${streamText})`;
     const suffix = `\n... truncated ${sessions.length - lines.length} sessions`;
     const candidate = [...lines, next].join('\n');
     if (candidate.length + suffix.length > EMBED_FIELD_LIMIT) {

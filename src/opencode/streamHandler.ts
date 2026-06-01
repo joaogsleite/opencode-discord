@@ -1,5 +1,6 @@
 import { detectTable, splitMessage } from '../utils/formatter.js';
 import { createLogger } from '../utils/logger.js';
+import { suppressLinkPreviews } from '../discord/messageOptions.js';
 
 const logger = createLogger('StreamHandler');
 
@@ -39,7 +40,7 @@ export interface StreamMessage {
    * @param content - Updated message content.
    * @returns Discord API edit result.
    */
-  edit(content: string): Promise<unknown>;
+  edit(content: string | { content: string; flags: number }): Promise<unknown>;
 }
 
 /** Discord thread subset required by streaming. */
@@ -49,7 +50,7 @@ export interface StreamThread {
    * @param content - Message content to send.
    * @returns Message that can be edited while streaming continues.
    */
-  send(content: string): Promise<StreamMessage>;
+  send(content: string | { content: string; flags: number }): Promise<StreamMessage>;
 
   /**
    * Send a typing indicator to the thread.
@@ -134,18 +135,46 @@ export interface StreamHandlerOptions {
   tableHandler?: TableEventDelegate;
   editThrottleMs?: number;
   retryDelayMs?: number;
+  maxRetryDelayMs?: number;
   maxRetries?: number;
   now?: () => number;
+  setTimeout?: typeof setTimeout;
+  clearTimeout?: typeof clearTimeout;
+}
+
+/** Live runtime state for a Discord thread's OpenCode stream subscription. */
+export type StreamSubscriptionRuntimeState = 'streaming' | 'retrying' | 'idle' | 'disconnected';
+
+/** Read-only live stream telemetry exposed to diagnostics commands. */
+export interface StreamSubscriptionStatus {
+  threadId: string;
+  sessionId: string;
+  projectPath?: string;
+  state: StreamSubscriptionRuntimeState;
+  failures: number;
+  lastEventAt?: number;
+  lastErrorAt?: number;
+  lastDisconnectAt?: number;
 }
 
 interface SubscriptionState {
   cancelled: boolean;
   pumpPromise: Promise<void>;
   typingInterval?: ReturnType<typeof setInterval>;
+  retryWake?: () => void;
+  threadId: string;
+  sessionId: string;
+  projectPath?: string;
+  runtimeState: StreamSubscriptionRuntimeState;
+  failures: number;
+  lastEventAt?: number;
+  lastErrorAt?: number;
+  lastDisconnectAt?: number;
 }
 
 const DEFAULT_EDIT_THROTTLE_MS = 1000;
 const DEFAULT_RETRY_DELAY_MS = 1000;
+const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 3;
 const TYPING_REFRESH_MS = 9000;
 const MAX_SUMMARY_DETAILS = 3;
@@ -155,8 +184,11 @@ export class StreamHandler {
   private readonly subscriptions = new Map<string, SubscriptionState>();
   private readonly editThrottleMs: number;
   private readonly retryDelayMs: number;
+  private readonly maxRetryDelayMs: number;
   private readonly maxRetries: number;
   private readonly now: () => number;
+  private readonly setTimeoutFn: typeof setTimeout;
+  private readonly clearTimeoutFn: typeof clearTimeout;
 
   /**
    * Create a stream handler.
@@ -166,8 +198,11 @@ export class StreamHandler {
   constructor(private readonly options: StreamHandlerOptions) {
     this.editThrottleMs = options.editThrottleMs ?? DEFAULT_EDIT_THROTTLE_MS;
     this.retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+    this.maxRetryDelayMs = options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.now = options.now ?? Date.now;
+    this.setTimeoutFn = options.setTimeout ?? setTimeout;
+    this.clearTimeoutFn = options.clearTimeout ?? clearTimeout;
   }
 
   /**
@@ -200,6 +235,11 @@ export class StreamHandler {
     const state: SubscriptionState = {
       cancelled: false,
       pumpPromise: Promise.resolve(),
+      threadId,
+      sessionId,
+      projectPath,
+      runtimeState: 'streaming',
+      failures: 0,
     };
     this.subscriptions.set(threadId, state);
     state.pumpPromise = this.pump(threadId, sessionId, client, thread, state, dedupeSet, projectPath).catch((error: unknown) => {
@@ -226,8 +266,27 @@ export class StreamHandler {
     if (state) {
       state.cancelled = true;
       this.stopTyping(state);
+      state.retryWake?.();
     }
     this.subscriptions.delete(threadId);
+  }
+
+  /**
+   * Get live stream telemetry for a Discord thread.
+   * @param threadId - Discord thread ID to inspect.
+   * @returns Stream status when a subscription exists.
+   */
+  getStatus(threadId: string): StreamSubscriptionStatus | undefined {
+    const state = this.subscriptions.get(threadId);
+    return state ? toSubscriptionStatus(state) : undefined;
+  }
+
+  /**
+   * Get live stream telemetry for all subscriptions.
+   * @returns Current stream statuses.
+   */
+  getStatuses(): StreamSubscriptionStatus[] {
+    return [...this.subscriptions.values()].map(toSubscriptionStatus);
   }
 
   /**
@@ -264,12 +323,15 @@ export class StreamHandler {
       while (!state.cancelled) {
         let receivedEvent = false;
         try {
+          state.runtimeState = 'streaming';
           const events = getEventStream(await client.global.event());
           for await (const event of events) {
             if (state.cancelled) {
               return;
             }
             receivedEvent = true;
+            failures = 0;
+            state.failures = 0;
             await this.handleEvent(context, event);
           }
           await this.render(context, true);
@@ -277,14 +339,20 @@ export class StreamHandler {
             return;
           }
           if (receivedEvent) {
+            state.lastEventAt = this.now();
+            state.runtimeState = 'idle';
             return;
           }
           failures += 1;
+          state.failures = failures;
           if (failures > this.maxRetries) {
+            state.runtimeState = 'disconnected';
+            state.lastDisconnectAt = this.now();
             await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
             return;
           }
-          await this.delay(this.retryDelayMs);
+          state.runtimeState = 'retrying';
+          await this.delay(this.getRetryDelay(failures), state);
           await this.recoverMissedSessionsAfterReconnect(context);
         } catch {
           await this.safeRender(context);
@@ -292,11 +360,16 @@ export class StreamHandler {
             failures = 0;
           }
           failures += 1;
+          state.failures = failures;
+          state.lastErrorAt = this.now();
           if (failures > this.maxRetries) {
+            state.runtimeState = 'disconnected';
+            state.lastDisconnectAt = this.now();
             await this.safeSend(thread, `Stream disconnected after ${this.maxRetries} retries.`, threadId, sessionId);
             return;
           }
-          await this.delay(this.retryDelayMs);
+          state.runtimeState = 'retrying';
+          await this.delay(this.getRetryDelay(failures), state);
           await this.recoverMissedSessionsAfterReconnect(context);
         }
       }
@@ -503,7 +576,7 @@ export class StreamHandler {
     }
 
     context.todosPrinted = true;
-    await context.thread.send(formatTodos(todos));
+    await context.thread.send(suppressLinkPreviews(formatTodos(todos)));
   }
 
   private async sendToolResult(
@@ -524,16 +597,16 @@ export class StreamHandler {
 
     const structuredSummary = formatStructuredToolSummary(output);
     if (structuredSummary) {
-      await context.thread.send(formatQuote(structuredSummary));
+      await context.thread.send(suppressLinkPreviews(formatQuote(structuredSummary)));
       return;
     }
 
     if (shouldRenderTitleOnly(part)) {
-      await context.thread.send(formatQuote(title));
+      await context.thread.send(suppressLinkPreviews(formatQuote(title)));
       return;
     }
 
-    await context.thread.send(formatQuote(formatToolSummary(part, state, title, output, status)));
+    await context.thread.send(suppressLinkPreviews(formatQuote(formatToolSummary(part, state, title, output, status))));
   }
 
   private async render(context: ReturnType<StreamHandler['createContext']>, forceEdit = false): Promise<void> {
@@ -544,9 +617,9 @@ export class StreamHandler {
     const chunks = splitMessage(context.aggregate || '');
     for (let index = context.sentChunks; index < chunks.length - 1; index += 1) {
       if (context.currentMessage) {
-        await context.currentMessage.edit(chunks[index] ?? '');
+        await context.currentMessage.edit(suppressLinkPreviews(chunks[index] ?? ''));
       } else {
-        await context.thread.send(chunks[index] ?? '');
+        await context.thread.send(suppressLinkPreviews(chunks[index] ?? ''));
       }
       context.currentMessage = undefined;
       context.sentChunks += 1;
@@ -554,7 +627,7 @@ export class StreamHandler {
 
     const content = this.withToolStatus(chunks.at(-1) ?? '', context.runningTools);
     if (!context.currentMessage) {
-      context.currentMessage = await context.thread.send(content);
+      context.currentMessage = await context.thread.send(suppressLinkPreviews(content));
       context.lastEditAt = this.now();
       context.lastRenderedContent = content;
       return;
@@ -562,7 +635,7 @@ export class StreamHandler {
 
     const currentTime = this.now();
     if (content !== context.lastRenderedContent && (forceEdit || currentTime - context.lastEditAt >= this.editThrottleMs)) {
-      await context.currentMessage.edit(content);
+      await context.currentMessage.edit(suppressLinkPreviews(content));
       context.lastEditAt = currentTime;
       context.lastRenderedContent = content;
     }
@@ -643,20 +716,45 @@ export class StreamHandler {
 
   private async safeSend(thread: StreamThread, content: string, threadId: string, sessionId: string): Promise<void> {
     try {
-      await thread.send(content);
+      await thread.send(suppressLinkPreviews(content));
     } catch (error) {
       logger.warn('Failed to send stream recovery notice', { threadId, sessionId, error });
     }
   }
 
-  private async delay(ms: number): Promise<void> {
-    if (ms <= 0) {
+  private getRetryDelay(failures: number): number {
+    return Math.min(this.retryDelayMs * 2 ** Math.max(0, failures - 1), this.maxRetryDelayMs);
+  }
+
+  private async delay(ms: number, state: SubscriptionState): Promise<void> {
+    if (ms <= 0 || state.cancelled) {
       return;
     }
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
+      const timeout = this.setTimeoutFn(() => {
+        state.retryWake = undefined;
+        resolve();
+      }, ms);
+      state.retryWake = () => {
+        this.clearTimeoutFn(timeout);
+        state.retryWake = undefined;
+        resolve();
+      };
     });
   }
+}
+
+function toSubscriptionStatus(state: SubscriptionState): StreamSubscriptionStatus {
+  return {
+    threadId: state.threadId,
+    sessionId: state.sessionId,
+    projectPath: state.projectPath,
+    state: state.runtimeState,
+    failures: state.failures,
+    lastEventAt: state.lastEventAt,
+    lastErrorAt: state.lastErrorAt,
+    lastDisconnectAt: state.lastDisconnectAt,
+  };
 }
 
 function isSessionScopedEvent(type: string): boolean {

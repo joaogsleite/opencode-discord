@@ -3,7 +3,9 @@ import { pathToFileURL } from 'node:url';
 import { downloadAndSave, type DiscordAttachmentLike } from '../../opencode/attachments.js';
 import type { StateManager } from '../../state/manager.js';
 import type { SessionState } from '../../state/types.js';
+import { BotError, ErrorCode } from '../../utils/errors.js';
 import { generateCorrelationId } from '../../utils/logger.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 /** File metadata consumed from the per-thread context buffer. */
 export interface ContextFile {
@@ -96,6 +98,8 @@ export interface MessageHandlerOptions {
   now?: () => number;
 }
 
+const SESSION_RECOVERY_NOTICE = 'Previous OpenCode session could not be recovered after restart. Use `/new` to start a new session or `/connect` to attach another existing session.';
+
 /**
  * Handle Discord messageCreate events for thread passthrough sessions.
  * @param message - Incoming Discord message
@@ -149,11 +153,22 @@ export async function handleMessageCreate(
   }
 
   const contextFiles = options.contextBuffer ? await options.contextBuffer.consume(threadId) : [];
-  await options.sessionBridge.sendPrompt(threadId, message.content, {
-    session,
-    correlationId,
-    contextFiles: [...contextFiles, ...attachmentFiles],
-  });
+  try {
+    await options.sessionBridge.sendPrompt(threadId, message.content, {
+      session,
+      correlationId,
+      contextFiles: [...contextFiles, ...attachmentFiles],
+    });
+  } catch (error) {
+    if (error instanceof BotError && error.code === ErrorCode.SESSION_NOT_FOUND) {
+      options.stateManager.setSession(threadId, { ...session, status: 'ended' });
+      options.stateManager.clearQueue(threadId);
+      await message.channel.send(suppressLinkPreviews(SESSION_RECOVERY_NOTICE));
+      return;
+    }
+
+    throw error;
+  }
 }
 
 async function downloadAttachments(

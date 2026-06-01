@@ -2,6 +2,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessionBridge.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -34,7 +35,7 @@ export function createRetryCommandHandler(deps: RetryCommandDependencies): Comma
     if (!assistantId) throw new BotError(ErrorCode.NO_MESSAGE_TO_REVERT, 'No assistant message is available to revert.', { sessionId: session.sessionId });
 
     await client.session.revert({ sessionID: session.sessionId, messageID: assistantId });
-    await interaction.editReply({ content: 'Retrying last prompt.' });
+    await interaction.editReply(suppressLinkPreviews({ content: 'Retrying last prompt.' }));
     await deps.sessionBridge.sendPrompt(interaction.channelId, { client, content: getText(lastUser) });
   };
 }

@@ -3,6 +3,7 @@ import type { ChannelConfig } from '../../config/types.js';
 import type { CacheManager } from '../../opencode/cache.js';
 import type { QueueEntry, SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface InteractionContext {
   correlationId: string;
@@ -17,11 +18,22 @@ interface InfoStateManager {
   getQueue(threadId: string): QueueEntry[];
 }
 
+interface StreamStatusProvider {
+  getStatus(threadId: string): {
+    state: string;
+    failures: number;
+    lastEventAt?: number;
+    lastErrorAt?: number;
+    lastDisconnectAt?: number;
+  } | undefined;
+}
+
 /** Dependencies for the /info command handler. */
 export interface InfoCommandDependencies {
   stateManager: InfoStateManager;
   serverManager: { getClient(projectPath: string): unknown };
   cacheManager: Pick<CacheManager, 'getMcpStatus'>;
+  streamStatusProvider?: StreamStatusProvider;
   now?: () => number;
 }
 
@@ -38,6 +50,7 @@ export function createInfoCommandHandler(deps: InfoCommandDependencies): Command
     await interaction.deferReply();
     const mcpStatus = deps.cacheManager.getMcpStatus(session.projectPath);
     const usage = await getUsage(deps.serverManager.getClient(session.projectPath), session.sessionId);
+    const now = (deps.now ?? Date.now)();
     const embed = new EmbedBuilder()
       .setTitle('Session Info')
       .setColor(0x5865f2)
@@ -47,13 +60,14 @@ export function createInfoCommandHandler(deps: InfoCommandDependencies): Command
         { name: 'Model', value: truncateFieldValue(session.model ?? 'default'), inline: true },
         { name: 'Project', value: truncateFieldValue(session.projectPath), inline: false },
         { name: 'Status', value: truncateFieldValue(session.status), inline: true },
-        { name: 'Uptime', value: truncateFieldValue(formatDuration((deps.now ?? Date.now)() - session.createdAt)), inline: true },
+        { name: 'Uptime', value: truncateFieldValue(formatDuration(now - session.createdAt)), inline: true },
         { name: 'Queue', value: String(queueLength), inline: true },
+        { name: 'Stream', value: truncateFieldValue(formatStreamStatus(deps.streamStatusProvider?.getStatus(threadId), now)), inline: false },
         { name: 'MCP', value: truncateFieldValue(formatMcp(mcpStatus)), inline: false },
         { name: 'Usage', value: truncateFieldValue(usage), inline: false },
       );
 
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply(suppressLinkPreviews({ embeds: [embed] }));
   };
 }
 
@@ -84,6 +98,24 @@ function formatDuration(milliseconds: number): string {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+function formatStreamStatus(status: ReturnType<StreamStatusProvider['getStatus']>, now: number): string {
+  if (!status) {
+    return 'not subscribed';
+  }
+
+  const lines = [`state: ${status.state}`, `failures: ${status.failures}`];
+  if (status.lastEventAt !== undefined) {
+    lines.push(`last event: ${formatDuration(now - status.lastEventAt)} ago`);
+  }
+  if (status.lastErrorAt !== undefined) {
+    lines.push(`last error: ${formatDuration(now - status.lastErrorAt)} ago`);
+  }
+  if (status.lastDisconnectAt !== undefined) {
+    lines.push(`last disconnect: ${formatDuration(now - status.lastDisconnectAt)} ago`);
+  }
+  return lines.join('\n');
 }
 
 function getStatus(value: unknown): string {

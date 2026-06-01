@@ -1,11 +1,12 @@
 import type { ChatInputCommandInteraction } from 'discord.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
 interface ForkClient { session: { fork(options: { sessionID: string; messageID?: string }): Promise<unknown> } }
-interface ThreadLike { id: string; send(content: string): Promise<unknown>; url?: string }
+interface ThreadLike { id: string; send(content: unknown): Promise<unknown>; url?: string }
 interface ParentChannelLike { threads: { create(options: { name: string; autoArchiveDuration?: number; reason?: string }): Promise<ThreadLike> } }
 
 /** Dependencies for the /fork command handler. */
@@ -39,9 +40,9 @@ export function createForkCommandHandler(deps: ForkCommandDependencies): Command
     const timestamp = deps.now?.() ?? Date.now();
     deps.stateManager.setSession(newThread.id, { ...session, sessionId: forkedSessionId, createdAt: timestamp, lastActivityAt: timestamp, status: 'active' });
     await deps.streamHandler.subscribe(newThread.id, forkedSessionId, client, new Set<string>(), session.projectPath);
-    await newThread.send(`Forked from <#${interaction.channelId}>.`);
-    await currentThread.send(`Fork created: <#${newThread.id}>.`);
-    await interaction.editReply({ content: `Forked session into <#${newThread.id}>.` });
+    await newThread.send(suppressLinkPreviews(`Forked from <#${interaction.channelId}>.`));
+    await currentThread.send(suppressLinkPreviews(`Fork created: <#${newThread.id}>.`));
+    await interaction.editReply(suppressLinkPreviews({ content: `Forked session into <#${newThread.id}>.` }));
   };
 }
 

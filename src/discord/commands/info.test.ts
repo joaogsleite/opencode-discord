@@ -123,6 +123,35 @@ describe('createInfoCommandHandler', () => {
     expect(fields.find((field) => field.name === 'Session')?.value).toContain('truncated');
   });
 
+  it('includes live stream telemetry when available', async () => {
+    const interaction = { channelId: 'thread-1', channel: { parentId: 'channel-1' }, deferReply: vi.fn(async () => undefined), editReply: vi.fn(async () => undefined) } as unknown as ChatInputCommandInteraction;
+    const deps: InfoCommandDependencies = {
+      stateManager: { getSession: vi.fn(() => session), getQueue: vi.fn(() => []) },
+      serverManager: { getClient: vi.fn(() => ({ session: { messages: vi.fn(async () => []) } })) },
+      cacheManager: { getMcpStatus: vi.fn(() => ({})) },
+      streamStatusProvider: {
+        getStatus: vi.fn(() => ({
+          threadId: 'thread-1',
+          sessionId: 'session-1',
+          projectPath: '/repo',
+          state: 'retrying',
+          failures: 2,
+          lastEventAt: 1_000,
+          lastErrorAt: 2_000,
+        })),
+      },
+      now: () => 3_000,
+    };
+
+    await createInfoCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig: { channelId: 'channel-1', projectPath: '/repo' } });
+
+    const replyOptions = vi.mocked(interaction.editReply).mock.calls[0]?.[0] as { embeds?: Array<{ data: { fields?: Array<{ name: string; value: string }> } }> } | undefined;
+    const fields = replyOptions?.embeds?.[0]?.data.fields ?? [];
+    const streamField = fields.find((field) => field.name === 'Stream');
+    expect(streamField?.value).toContain('retrying');
+    expect(streamField?.value).toContain('failures: 2');
+  });
+
   it('requires a thread with an attached session', async () => {
     const deps: InfoCommandDependencies = {
       stateManager: { getSession: vi.fn(() => undefined), getQueue: vi.fn(() => []) },

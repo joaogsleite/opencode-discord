@@ -1,6 +1,7 @@
 import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -26,7 +27,7 @@ export function createTodoCommandHandler(deps: TodoCommandDependencies): Command
     const todos = unwrapTodos(await client.session.todo({ sessionID: session.sessionId }));
     const description = todos.length ? todos.map(formatTodo).join('\n') : 'No todos.';
     const embed = new EmbedBuilder().setTitle('Session Todos').setColor(0x5865f2).setDescription(description.slice(0, 4000));
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply(suppressLinkPreviews({ embeds: [embed] }));
   };
 }
 

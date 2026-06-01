@@ -1,3 +1,4 @@
+import { suppressLinkPreviews } from '../discord/messageOptions.js';
 import { BotError, ErrorCode } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -53,7 +54,7 @@ export interface QuestionThread {
    * @param payload - Message content or embed payload.
    * @returns Discord API send result.
    */
-  send(payload: string | { embeds?: unknown[]; content?: string }): Promise<unknown>;
+  send(payload: string | { embeds?: unknown[]; content?: string; flags?: number }): Promise<unknown>;
 }
 
 /** Options for constructing a question handler. */
@@ -179,7 +180,7 @@ export class QuestionHandler {
     const answers = this.parseAnswer(question, content);
     if (!answers) {
       const suffix = correlationId ? ` *(ref: ${correlationId})*` : '';
-      await thread.send(`Invalid answer. Please choose one of the listed options.${suffix}`);
+      await thread.send(suppressLinkPreviews(`Invalid answer. Please choose one of the listed options.${suffix}`));
       await this.showCurrentQuestion(thread, state);
       return;
     }
@@ -291,7 +292,7 @@ export class QuestionHandler {
     this.assertNoSdkError(await state.client.question.reject({ requestID: state.requestID }), ErrorCode.QUESTION_TIMEOUT);
     const thread = this.options.getThread(threadId);
     if (thread) {
-      await thread.send('Question timed out. The agent will continue without an answer.');
+      await thread.send(suppressLinkPreviews('Question timed out. The agent will continue without an answer.'));
     }
   }
 
@@ -300,7 +301,7 @@ export class QuestionHandler {
     if (!question) {
       return;
     }
-    await thread.send(this.formatQuestion(question));
+    await thread.send(suppressLinkPreviews(this.formatQuestion(question)));
   }
 
   private formatQuestion(question: QuestionInfo): string {

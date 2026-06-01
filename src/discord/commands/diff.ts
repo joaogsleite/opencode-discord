@@ -1,6 +1,7 @@
 import { AttachmentBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -29,13 +30,13 @@ export function createDiffCommandHandler(deps: DiffCommandDependencies): Command
     const diff = extractText(await client.session.diff({ sessionID: session.sessionId })).trim();
 
     if (!diff) {
-      await interaction.editReply({ content: 'No file changes in this session.' });
+      await interaction.editReply(suppressLinkPreviews({ content: 'No file changes in this session.' }));
       return;
     }
 
     const createAttachment = deps.createAttachment ?? defaultCreateAttachment;
     const attachment = createAttachment(diff, 'session.diff');
-    await interaction.editReply({ content: `Project:\n\`\`\`\n${session.projectPath}\n\`\`\``, files: [attachment as AttachmentBuilder] });
+    await interaction.editReply(suppressLinkPreviews({ content: `Project:\n\`\`\`\n${session.projectPath}\n\`\`\``, files: [attachment as AttachmentBuilder] }));
   };
 }
 
@@ -66,9 +67,15 @@ function requireClient(serverManager: DiffCommandDependencies['serverManager'], 
 
 function extractText(value: unknown): string {
   if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractPatch).filter(Boolean).join('\n');
   if (isRecord(value) && typeof value.data === 'string') return value.data;
+  if (isRecord(value) && Array.isArray(value.data)) return value.data.map(extractPatch).filter(Boolean).join('\n');
   if (isRecord(value) && typeof value.diff === 'string') return value.diff;
   return '';
+}
+
+function extractPatch(value: unknown): string {
+  return isRecord(value) && typeof value.patch === 'string' ? value.patch : '';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

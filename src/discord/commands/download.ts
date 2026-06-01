@@ -4,6 +4,7 @@ import { AttachmentBuilder, type ChatInputCommandInteraction } from 'discord.js'
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { resolveSafePath } from '../../utils/filesystem.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext {
   correlationId: string;
@@ -57,7 +58,7 @@ export function createDownloadCommandHandler(deps: DownloadCommandDependencies =
       throw new BotError(ErrorCode.FILE_NOT_FOUND, `File not found: ${file}`, { file, cause: getErrorMessage(error) });
     }
 
-    await interaction.reply({ content: `File:\n\`\`\`\n${filePath}\n\`\`\``, files: [attachment] });
+    await interaction.reply(suppressLinkPreviews({ content: `File:\n\`\`\`\n${filePath}\n\`\`\``, files: [attachment] }));
   };
 }
 

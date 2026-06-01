@@ -11,6 +11,7 @@ import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { createLogger, generateCorrelationId } from '../../utils/logger.js';
 import { checkUserAllowed } from '../../utils/permissions.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 const logger = createLogger('InteractionHandler');
 
@@ -125,7 +126,7 @@ async function handleAutocompleteInteraction(
     });
   } catch (err) {
     logger.warn('Autocomplete handler failed', { commandName: interaction.commandName, correlationId: context.correlationId, err });
-    await interaction.respond([]);
+    await respondSafely(interaction, [], context.correlationId);
   }
 }
 
@@ -153,7 +154,7 @@ async function sendError(
   const content = err instanceof BotError
     ? `**Error:** ${err.message} *(ref: ${correlationId})*`
     : `**Unexpected error** *(ref: ${correlationId})*`;
-  const options: InteractionReplyOptions = { content, flags: MessageFlags.Ephemeral };
+  const options = suppressLinkPreviews({ content, flags: MessageFlags.Ephemeral }) as InteractionReplyOptions;
 
   if (err instanceof BotError) {
     logger.warn(err.message, { code: err.code, correlationId, ...err.context });
@@ -162,14 +163,30 @@ async function sendError(
   }
 
   if (interaction.replied) {
-    await interaction.followUp(options);
+    await sendSafely(() => interaction.followUp(options), correlationId);
     return;
   }
 
   if (interaction.deferred) {
-    await interaction.followUp(options);
+    await sendSafely(() => interaction.followUp(options), correlationId);
     return;
   }
 
-  await interaction.reply(options);
+  await sendSafely(() => interaction.reply(options), correlationId);
+}
+
+async function respondSafely(
+  interaction: AutocompleteInteraction,
+  choices: ApplicationCommandOptionChoiceData[],
+  correlationId: string,
+): Promise<void> {
+  await sendSafely(() => interaction.respond(choices), correlationId);
+}
+
+async function sendSafely(operation: () => Promise<unknown>, correlationId: string): Promise<void> {
+  try {
+    await operation();
+  } catch (err) {
+    logger.warn('Failed to send Discord interaction response', { correlationId, err });
+  }
 }

@@ -5,6 +5,7 @@ import type { CacheManager } from '../../opencode/cache.js';
 import { getProviderId, getProviderModelIds, listModelIds } from '../../opencode/modelIds.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface InteractionContext {
   correlationId: string;
@@ -67,7 +68,7 @@ async function handleSet(interaction: ChatInputCommandInteraction, context: Inte
 
   const session = requireSession(deps.stateManager.getSession(threadId), threadId);
   deps.stateManager.setSession(threadId, { ...session, model });
-  await interaction.editReply({ content: `Model set to \`${model}\`.` });
+  await interaction.editReply(suppressLinkPreviews({ content: `Model set to \`${model}\`.` }));
 }
 
 async function handleList(interaction: ChatInputCommandInteraction, context: InteractionContext, deps: ModelCommandDependencies): Promise<void> {
@@ -110,7 +111,7 @@ async function handleList(interaction: ChatInputCommandInteraction, context: Int
     embed.setDescription('No models available.');
   }
 
-  await interaction.editReply({ embeds: [embed] });
+  await interaction.editReply(suppressLinkPreviews({ embeds: [embed] }));
 }
 
 function requireChannelConfig(context: InteractionContext): ChannelConfig {

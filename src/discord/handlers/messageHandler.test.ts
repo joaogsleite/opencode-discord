@@ -2,6 +2,7 @@ import type { Message } from 'discord.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StateManager } from '../../state/manager.js';
 import type { SessionState } from '../../state/types.js';
+import { BotError, ErrorCode } from '../../utils/errors.js';
 import {
   handleMessageCreate,
   type AttachmentProvider,
@@ -18,7 +19,7 @@ interface MockMessageOptions {
   content?: string;
   id?: string;
   channelId?: string;
-  channel?: { id: string; isThread: () => boolean };
+  channel?: { id: string; isThread: () => boolean; send?: ReturnType<typeof vi.fn> };
   attachments?: unknown;
 }
 
@@ -55,6 +56,7 @@ function createStateManager(session?: SessionState): StateManager {
     getSession: vi.fn(() => session),
     setSession: vi.fn(),
     enqueue: vi.fn(),
+    clearQueue: vi.fn(),
   } as unknown as StateManager;
 }
 
@@ -175,6 +177,20 @@ describe('handleMessageCreate', () => {
       correlationId: expect.stringMatching(/^thread-1-\d+$/),
       contextFiles: [],
     });
+  });
+
+  it('ends the mapping, clears queue, and notifies the thread when OpenCode lost the session after reboot', async () => {
+    const session = createSession();
+    const options = createOptions(session);
+    const send = vi.fn(async () => undefined);
+    const message = createMessage({ channel: { id: 'thread-1', isThread: () => true, send } });
+    vi.mocked(options.sessionBridge.sendPrompt).mockRejectedValue(new BotError(ErrorCode.SESSION_NOT_FOUND, 'OpenCode session was not found'));
+
+    await handleMessageCreate(message, options);
+
+    expect(options.stateManager.setSession).toHaveBeenCalledWith('thread-1', { ...session, status: 'ended' });
+    expect(options.stateManager.clearQueue).toHaveBeenCalledWith('thread-1');
+    expect(send).toHaveBeenCalledWith('Previous OpenCode session could not be recovered after restart. Use `/new` to start a new session or `/connect` to attach another existing session.');
   });
 
   it('reactivates inactive sessions before forwarding', async () => {

@@ -72,4 +72,19 @@ describe('createStatusCommandHandler', () => {
     expect(threadsField?.value.length ?? 0).toBeLessThanOrEqual(1024);
     expect(threadsField?.value).toContain('truncated');
   });
+
+  it('shows stream state and retry failures for active sessions when telemetry is available', async () => {
+    const interaction = { channelId: 'channel-1', channel: null, reply: vi.fn(async () => undefined) } as unknown as ChatInputCommandInteraction;
+    const deps: StatusCommandDependencies = {
+      stateManager: { getState: vi.fn(() => state) },
+      streamStatusProvider: { getStatus: vi.fn(() => ({ state: 'retrying', failures: 2 })) },
+    };
+
+    await createStatusCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    const replyOptions = vi.mocked(interaction.reply).mock.calls[0]?.[0] as { embeds?: Array<{ data: { fields?: Array<{ name: string; value: string }> } }> } | undefined;
+    const threads = replyOptions?.embeds?.[0]?.data.fields?.find((field) => field.name === 'Threads')?.value ?? '';
+    expect(threads).toContain('stream retrying');
+    expect(threads).toContain('failures 2');
+  });
 });

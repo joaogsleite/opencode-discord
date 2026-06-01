@@ -4,6 +4,7 @@ import type { OpencodeSessionClient, SessionBridge } from '../../opencode/sessio
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { createLogger, type Logger } from '../../utils/logger.js';
 import { checkAgentAllowed } from '../../utils/permissions.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 const logger = createLogger('NewCommand');
 
@@ -16,7 +17,7 @@ type CommandHandler = (interaction: ChatInputCommandInteraction, context: Intera
 
 interface ThreadLike {
   id: string;
-  send(content: string): Promise<unknown>;
+  send(content: unknown): Promise<unknown>;
   members: { add(userId: string): Promise<unknown> };
 }
 
@@ -44,7 +45,7 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
     const log = deps.logger ?? logger;
     log.info('/new started', { correlationId: context.correlationId, channelId: interaction.channelId, guildId: interaction.guildId });
     const channelConfig = requireChannelConfig(context);
-    const prompt = interaction.options.getString('prompt', true);
+    const prompt = interaction.options.getString('prompt');
     const title = normalizeTitle(interaction.options.getString('title'), prompt);
     const agent = interaction.options.getString('agent') ?? channelConfig.defaultAgent ?? 'build';
     log.info('/new options resolved', { correlationId: context.correlationId, projectPath: channelConfig.projectPath, agent, title });
@@ -67,8 +68,6 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
     log.info('/new Discord thread created', { correlationId: context.correlationId, threadId: thread.id });
     await thread.members.add(interaction.user.id);
     deps.rememberThread?.(thread.id, thread);
-    await thread.send(formatInitialPrompt(prompt));
-
     log.info('/new creating OpenCode session', { correlationId: context.correlationId, threadId: thread.id });
     await deps.sessionBridge.createSession({
       client,
@@ -81,10 +80,15 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
       createdBy: interaction.user.id,
       title,
     });
-    log.info('/new sending initial prompt', { correlationId: context.correlationId, threadId: thread.id });
-    await deps.sessionBridge.sendPrompt(thread.id, { client, content: prompt, agent, model: channelConfig.model ?? null });
+    if (prompt?.trim()) {
+      await thread.send(suppressLinkPreviews(formatInitialPrompt(prompt)));
+      log.info('/new sending initial prompt', { correlationId: context.correlationId, threadId: thread.id });
+      await deps.sessionBridge.sendPrompt(thread.id, { client, content: prompt, agent, model: channelConfig.model ?? null });
+    } else {
+      await thread.send(suppressLinkPreviews('OpenCode session ready. Send a message in this thread to start the session.'));
+    }
     log.info('/new editing reply', { correlationId: context.correlationId, threadId: thread.id });
-    await interaction.editReply({ content: `Created OpenCode session in thread ${thread.id}.` });
+    await interaction.editReply(suppressLinkPreviews({ content: `Created OpenCode session in thread ${thread.id}.` }));
     log.info('/new completed', { correlationId: context.correlationId, threadId: thread.id });
   };
 }
@@ -122,8 +126,8 @@ function requireThreadCreatableChannel(interaction: ChatInputCommandInteraction)
   return channel as ThreadCreatableChannel;
 }
 
-function normalizeTitle(title: string | null, prompt: string): string {
-  const base = title?.trim() || prompt.trim().slice(0, 50) || 'OpenCode session';
+function normalizeTitle(title: string | null, prompt: string | null): string {
+  const base = title?.trim() || prompt?.trim().slice(0, 50) || 'OpenCode session';
   return base.slice(0, 100);
 }
 

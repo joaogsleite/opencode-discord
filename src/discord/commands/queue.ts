@@ -1,6 +1,7 @@
 import type { ChatInputCommandInteraction } from 'discord.js';
 import type { QueueEntry } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext {
   correlationId: string;
@@ -32,14 +33,14 @@ export function createQueueCommandHandler(deps: QueueCommandDependencies): Comma
 
     if (subcommand === 'list') {
       const queue = deps.stateManager.getQueue(threadId);
-      await interaction.reply({ content: formatQueue(queue) });
+      await interaction.reply(suppressLinkPreviews({ content: formatQueue(queue) }));
       return;
     }
 
     if (subcommand === 'clear') {
       deps.stateManager.clearQueue(threadId);
       deps.stateManager.save?.();
-      await interaction.reply({ content: 'Queue cleared.' });
+      await interaction.reply(suppressLinkPreviews({ content: 'Queue cleared.' }));
       return;
     }
 

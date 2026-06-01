@@ -176,6 +176,54 @@ describe('SessionBridge', () => {
     expect(streamSubscriber.subscribe).toHaveBeenCalledBefore(client.session.promptAsync as never);
   });
 
+  it('verifies the OpenCode session before sending a prompt', async () => {
+    const { bridge, stateManager } = createBridge(2000);
+    const client = createClient();
+    stateManager.sessions.set('thread-1', {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    });
+
+    await bridge.sendPrompt('thread-1', { client, content: 'after reboot' });
+
+    expect(client.session.get).toHaveBeenCalledWith({ sessionID: 'session-1' });
+    expect(client.session.get).toHaveBeenCalledBefore(client.session.promptAsync as never);
+  });
+
+  it('throws SESSION_NOT_FOUND and does not prompt when OpenCode lost the persisted session', async () => {
+    const { bridge, stateManager, streamSubscriber } = createBridge(2000);
+    const client = createClient({ get: vi.fn(async () => null) });
+    const session: SessionState = {
+      sessionId: 'session-1',
+      guildId: 'guild-1',
+      channelId: 'channel-1',
+      projectPath: '/repo',
+      agent: 'build',
+      model: null,
+      createdBy: 'user-1',
+      createdAt: 1000,
+      lastActivityAt: 1000,
+      status: 'active',
+    };
+    stateManager.sessions.set('thread-1', session);
+
+    await expect(bridge.sendPrompt('thread-1', { client, content: 'after reboot' })).rejects.toMatchObject({
+      code: ErrorCode.SESSION_NOT_FOUND,
+    });
+
+    expect(streamSubscriber.subscribe).not.toHaveBeenCalled();
+    expect(client.session.promptAsync).not.toHaveBeenCalled();
+    expect(stateManager.setSession).not.toHaveBeenCalled();
+  });
+
   it('refreshes the stream subscription before every prompt with the same client', async () => {
     const { bridge, stateManager, streamSubscriber } = createBridge(2000);
     const client = createClient();

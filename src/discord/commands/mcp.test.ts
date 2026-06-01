@@ -32,6 +32,25 @@ describe('createMcpCommandHandler', () => {
     expect(interaction.editReply).toHaveBeenCalledWith({ embeds: [expect.objectContaining({ data: expect.objectContaining({ title: 'MCP Servers', description: expect.stringContaining('filesystem') }) })] });
   });
 
+  it('defers before starting OpenCode so unhealthy servers do not expire the Discord interaction', async () => {
+    let resolveStartup: (client: unknown) => void = () => undefined;
+    const startup = new Promise<unknown>((resolve) => {
+      resolveStartup = resolve;
+    });
+    const client = { mcp: { status: vi.fn(async () => ({})), connect: vi.fn(async () => true), disconnect: vi.fn(async () => true) } };
+    const deps = createDeps();
+    deps.serverManager.ensureRunning = vi.fn(() => startup);
+    const interaction = createInteraction('list');
+
+    const command = createMcpCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+    await Promise.resolve();
+
+    expect(interaction.deferReply).toHaveBeenCalledBefore(vi.mocked(deps.serverManager.ensureRunning));
+
+    resolveStartup(client);
+    await command;
+  });
+
   it('reconnects all MCP servers when no name is provided', async () => {
     const deps = createDeps({ filesystem: { status: 'disabled' }, github: { status: 'connected' } });
     const interaction = createInteraction('reconnect');

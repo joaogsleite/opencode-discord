@@ -4,7 +4,7 @@ import type { ChannelConfig } from '../../config/types.js';
 import { ErrorCode } from '../../utils/errors.js';
 import { createNewCommandHandler, type NewCommandDependencies } from './new.js';
 
-function createInteraction(options: { channel?: unknown; prompt?: string; agent?: string | null; title?: string | null } = {}): ChatInputCommandInteraction {
+function createInteraction(options: { channel?: unknown; prompt?: string | null; agent?: string | null; title?: string | null } = {}): ChatInputCommandInteraction {
   return {
     channelId: 'channel-1',
     guildId: 'guild-1',
@@ -13,7 +13,7 @@ function createInteraction(options: { channel?: unknown; prompt?: string; agent?
     options: {
       getString: vi.fn((name: string, required?: boolean) => {
         if (name === 'prompt') {
-          return options.prompt ?? (required ? 'Build feature' : null);
+          return options.prompt === undefined ? (required ? 'Build feature' : null) : options.prompt;
         }
         if (name === 'agent') {
           return options.agent ?? null;
@@ -115,6 +115,25 @@ describe('createNewCommandHandler', () => {
     await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
 
     expect(thread.members.add).toHaveBeenCalledWith('user-1');
+  });
+
+  it('creates a session and waits for the first thread message when prompt is omitted', async () => {
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
+    const channel = { threads: { create: vi.fn(async () => thread) } };
+    const deps = createDeps();
+    const interaction = createInteraction({ channel, prompt: null });
+
+    await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig });
+
+    expect(channel.threads.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'OpenCode session' }));
+    expect(deps.sessionBridge.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1',
+      agent: 'build',
+      title: 'OpenCode session',
+    }));
+    expect(deps.sessionBridge.sendPrompt).not.toHaveBeenCalled();
+    expect(thread.send).toHaveBeenCalledWith(expect.stringContaining('Send a message in this thread'));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('thread-1') }));
   });
 
   it('logs each /new execution boundary', async () => {

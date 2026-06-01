@@ -6,6 +6,7 @@ import { listSelectableAgentIds } from '../../opencode/agentIds.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { checkAgentAllowed } from '../../utils/permissions.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface InteractionContext {
   correlationId: string;
@@ -64,7 +65,7 @@ async function handleSet(interaction: ChatInputCommandInteraction, context: Inte
 
   const session = requireSession(deps.stateManager.getSession(threadId), threadId);
   deps.stateManager.setSession(threadId, { ...session, agent });
-  await interaction.reply({ content: `Agent set to \`${agent}\`.` });
+  await interaction.reply(suppressLinkPreviews({ content: `Agent set to \`${agent}\`.` }));
 }
 
 async function handleList(interaction: ChatInputCommandInteraction, context: InteractionContext, deps: AgentCommandDependencies): Promise<void> {
@@ -79,7 +80,7 @@ async function handleList(interaction: ChatInputCommandInteraction, context: Int
     .setColor(0x5865f2)
     .setDescription(agents.length > 0 ? formatAgentList(agents) : 'No agents available.');
 
-  await interaction.editReply({ embeds: [embed] });
+  await interaction.editReply(suppressLinkPreviews({ embeds: [embed] }));
 }
 
 function requireChannelConfig(context: InteractionContext): ChannelConfig {

@@ -91,6 +91,29 @@ describe('createDiffCommandHandler', () => {
     expect(interaction.editReply).toHaveBeenCalledWith({ content: 'No file changes in this session.' });
   });
 
+  it('formats SDK file diff arrays as an attached patch', async () => {
+    const client = {
+      session: {
+        diff: vi.fn(async () => [
+          {
+            file: 'src/index.ts',
+            patch: 'diff --git a/src/index.ts b/src/index.ts\n+change',
+            additions: 1,
+            deletions: 0,
+            status: 'modified',
+          },
+        ]),
+      },
+    };
+    const deps = createDeps({ serverManager: { getClient: vi.fn(() => client) } });
+    const interaction = createInteraction();
+
+    await createDiffCommandHandler(deps)(interaction, { correlationId: 'corr-1' });
+
+    expect(deps.createAttachment).toHaveBeenCalledWith('diff --git a/src/index.ts b/src/index.ts\n+change', 'session.diff');
+    expect(interaction.editReply).toHaveBeenCalledWith({ content: 'Project:\n```\n/repo\n```', files: [{ content: 'diff --git a/src/index.ts b/src/index.ts\n+change', name: 'session.diff' }] });
+  });
+
   it('requires a session thread', async () => {
     const interaction = { ...createInteraction(), channel: { parentId: null } } as unknown as ChatInputCommandInteraction;
 

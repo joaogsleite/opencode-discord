@@ -299,6 +299,23 @@ describe('handleInteraction', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/"correlationId":"channel-1-\d+"/));
   });
 
+  it('does not reject when a command error response fails because Discord expired the interaction', async () => {
+    const interaction = createCommandInteraction('new');
+    interaction.reply = vi.fn(async () => {
+      throw new Error('Unknown interaction');
+    }) as never;
+
+    await expect(handleInteraction(interaction, {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map([
+        ['new', vi.fn<CommandHandler>(async () => {
+          throw new BotError(ErrorCode.SERVER_START_FAILED, 'OpenCode server failed to become healthy');
+        })],
+      ]),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(),
+    })).resolves.toBeUndefined();
+  });
+
   it('responds with empty autocomplete choices when the autocomplete handler fails', async () => {
     const interaction = createAutocompleteInteraction();
 
@@ -311,6 +328,21 @@ describe('handleInteraction', () => {
     });
 
     expect(interaction.respond).toHaveBeenCalledWith([]);
+  });
+
+  it('does not reject when the autocomplete fallback response fails because Discord expired the interaction', async () => {
+    const interaction = createAutocompleteInteraction();
+    interaction.respond = vi.fn(async () => {
+      throw new Error('Unknown interaction');
+    }) as never;
+
+    await expect(handleInteraction(interaction, {
+      configLoader: createConfigLoader(),
+      commandHandlers: new Map(),
+      autocompleteHandler: vi.fn<AutocompleteHandler>(async () => {
+        throw new BotError(ErrorCode.AGENT_NOT_FOUND, 'Agent cache failed');
+      }),
+    })).resolves.toBeUndefined();
   });
 
   it('ignores interactions that are neither commands nor autocomplete', async () => {

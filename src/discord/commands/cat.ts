@@ -4,6 +4,7 @@ import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { inferLanguage, resolveSafePath } from '../../utils/filesystem.js';
 import { splitCodeBlockMessages } from '../../utils/formatter.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext {
   correlationId: string;
@@ -47,9 +48,9 @@ export function createCatCommandHandler(deps: CatCommandDependencies = defaultDe
     const messages = formatResponse(filePath, interaction.options.getInteger('start'), interaction.options.getInteger('end'), language, ranged);
 
     const [first = '```\n\n```', ...rest] = messages;
-    await interaction.reply({ content: first });
+    await interaction.reply(suppressLinkPreviews({ content: first }));
     for (const message of rest) {
-      await interaction.followUp({ content: message });
+      await interaction.followUp(suppressLinkPreviews({ content: message }));
     }
   };
 }

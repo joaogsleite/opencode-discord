@@ -2,6 +2,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import type { SessionState } from '../../state/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { splitMessage as defaultSplitMessage } from '../../utils/formatter.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext { correlationId: string }
 type CommandHandler = (interaction: ChatInputCommandInteraction, context: CommandContext) => Promise<void>;
@@ -27,9 +28,9 @@ export function createSummaryCommandHandler(deps: SummaryCommandDependencies): C
     await interaction.deferReply();
     const summary = extractText(await client.session.summarize({ sessionID: session.sessionId, ...model }));
     const chunks = (deps.splitMessage ?? defaultSplitMessage)(summary || 'No summary returned.');
-    await interaction.editReply({ content: chunks[0] ?? 'No summary returned.' });
+    await interaction.editReply(suppressLinkPreviews({ content: chunks[0] ?? 'No summary returned.' }));
     for (const chunk of chunks.slice(1)) {
-      await interaction.followUp({ content: chunk });
+      await interaction.followUp(suppressLinkPreviews({ content: chunk }));
     }
   };
 }

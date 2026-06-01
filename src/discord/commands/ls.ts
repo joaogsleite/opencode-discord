@@ -2,6 +2,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import type { ChannelConfig } from '../../config/types.js';
 import { BotError, ErrorCode } from '../../utils/errors.js';
 import { listDirectory, resolveSafePath } from '../../utils/filesystem.js';
+import { suppressLinkPreviews } from '../messageOptions.js';
 
 interface CommandContext {
   correlationId: string;
@@ -36,7 +37,7 @@ export function createLsCommandHandler(deps: LsCommandDependencies = defaultDeps
       throw new BotError(ErrorCode.FILE_NOT_FOUND, `Path not found: ${requestedPath}`, { path: requestedPath, cause: getErrorMessage(error) });
     }
 
-    await interaction.reply({ content: formatListing(dirPath, entries) });
+    await interaction.reply(suppressLinkPreviews({ content: formatListing(dirPath, entries) }));
   };
 }
 
