@@ -3,6 +3,7 @@ export interface ChannelConfig {
   channelId: string;
   projectPath: string;
   defaultAgent?: string;
+  model?: string;
   allowAgentSwitch?: boolean;
   allowedAgents?: string[];
   allowedUsers?: string[];

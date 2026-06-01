@@ -77,12 +77,12 @@ export function createNewCommandHandler(deps: NewCommandDependencies): CommandHa
       channelId: interaction.channelId,
       projectPath: channelConfig.projectPath,
       agent,
-      model: null,
+      model: channelConfig.model ?? null,
       createdBy: interaction.user.id,
       title,
     });
     log.info('/new sending initial prompt', { correlationId: context.correlationId, threadId: thread.id });
-    await deps.sessionBridge.sendPrompt(thread.id, { client, content: prompt, agent, model: null });
+    await deps.sessionBridge.sendPrompt(thread.id, { client, content: prompt, agent, model: channelConfig.model ?? null });
     log.info('/new editing reply', { correlationId: context.correlationId, threadId: thread.id });
     await interaction.editReply({ content: `Created OpenCode session in thread ${thread.id}.` });
     log.info('/new completed', { correlationId: context.correlationId, threadId: thread.id });

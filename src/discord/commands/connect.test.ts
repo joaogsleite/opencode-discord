@@ -58,6 +58,19 @@ describe('createConnectCommandHandler', () => {
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('session-1') }));
   });
 
+  it('uses the configured channel model when connecting to an existing session', async () => {
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined) };
+    const channel = { threads: { create: vi.fn(async () => thread) } };
+    const deps = createDeps();
+    const modelChannelConfig: ChannelConfig = { ...channelConfig, model: 'google/gemini-3.5-flash' };
+
+    await createConnectCommandHandler(deps)(createInteraction({ channel }), { correlationId: 'corr-1', channelConfig: modelChannelConfig });
+
+    expect(deps.sessionBridge.connectToSession).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'google/gemini-3.5-flash',
+    }));
+  });
+
   it('rejects sessions already attached to another thread', async () => {
     const deps = createDeps({
       version: 1,

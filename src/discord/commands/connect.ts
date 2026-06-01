@@ -58,7 +58,7 @@ export function createConnectCommandHandler(deps: ConnectCommandDependencies): C
       projectPath: channelConfig.projectPath,
       sessionId,
       agent: channelConfig.defaultAgent ?? 'build',
-      model: null,
+      model: channelConfig.model ?? null,
       createdBy: interaction.user.id,
       historyLimit: channelConfig.connectHistoryLimit,
       thread,

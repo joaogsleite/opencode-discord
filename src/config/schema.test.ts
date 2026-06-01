@@ -25,6 +25,7 @@ describe('configSchema', () => {
   it('applies defaults for optional channel fields', () => {
     const result = configSchema.parse(validConfig);
     const channel = result.servers[0]!.channels[0]!;
+    expect(channel.model).toBeUndefined();
     expect(channel.allowAgentSwitch).toBe(true);
     expect(channel.allowedAgents).toEqual([]);
     expect(channel.allowedUsers).toEqual([]);
@@ -83,6 +84,7 @@ describe('configSchema', () => {
               channelId: '222',
               projectPath: '/path',
               defaultAgent: 'code',
+              model: 'google/gemini-3.5-flash',
               allowAgentSwitch: false,
               allowedAgents: ['code', 'build'],
               allowedUsers: ['user1'],
@@ -97,5 +99,17 @@ describe('configSchema', () => {
     };
     const result = configSchema.safeParse(fullConfig);
     expect(result.success).toBe(true);
+  });
+
+  it('preserves the optional channel model', () => {
+    const config = structuredClone(validConfig);
+    config.servers[0]!.channels[0] = {
+      ...config.servers[0]!.channels[0]!,
+      model: 'google/gemini-3.5-flash',
+    } as any;
+
+    const result = configSchema.parse(config);
+
+    expect(result.servers[0]!.channels[0]!.model).toBe('google/gemini-3.5-flash');
   });
 });

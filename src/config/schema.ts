@@ -5,6 +5,7 @@ export const channelSchema = z.object({
   channelId: z.string().min(1),
   projectPath: z.string().min(1),
   defaultAgent: z.string().optional(),
+  model: z.string().min(1).optional(),
   allowAgentSwitch: z.boolean().default(true),
   allowedAgents: z.array(z.string()).default([]),
   allowedUsers: z.array(z.string()).default([]),

@@ -78,6 +78,23 @@ describe('createNewCommandHandler', () => {
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('thread-1') }));
   });
 
+  it('uses the configured channel model for new sessions and the initial prompt', async () => {
+    const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
+    const channel = { threads: { create: vi.fn(async () => thread) } };
+    const deps = createDeps();
+    const interaction = createInteraction({ channel, prompt: 'Build feature' });
+    const modelChannelConfig: ChannelConfig = { ...channelConfig, model: 'google/gemini-3.5-flash' };
+
+    await createNewCommandHandler(deps)(interaction, { correlationId: 'corr-1', channelConfig: modelChannelConfig });
+
+    expect(deps.sessionBridge.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'google/gemini-3.5-flash',
+    }));
+    expect(deps.sessionBridge.sendPrompt).toHaveBeenCalledWith('thread-1', expect.objectContaining({
+      model: 'google/gemini-3.5-flash',
+    }));
+  });
+
   it('quotes every line of a multiline initial prompt', async () => {
     const thread = { id: 'thread-1', send: vi.fn(async () => undefined), members: { add: vi.fn(async () => undefined) } };
     const channel = { threads: { create: vi.fn(async () => thread) } };
